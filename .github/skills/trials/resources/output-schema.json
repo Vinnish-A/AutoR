@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/schemas/clinical-trials-retrieval-output.json",
+  "title": "ClinicalTrialsRetrievalOutput",
+  "type": "object",
+  "required": ["query", "normalized_query", "results"],
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "normalized_query": {
+      "type": "object",
+      "required": ["query_label"],
+      "properties": {
+        "query_label": {"type": "string"},
+        "theme": {"type": ["string", "null"]},
+        "theme_english": {"type": ["string", "null"]},
+        "condition": {"type": ["string", "null"]},
+        "intervention": {"type": ["string", "null"]},
+        "status": {"type": ["string", "null"]},
+        "location": {"type": ["string", "null"]},
+        "modifier_concepts": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "modifier_search_terms": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "fallback_term": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "provider_targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "implemented", "access_mode"],
+        "properties": {
+          "name": {"type": "string"},
+          "implemented": {"type": "boolean"},
+          "access_mode": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "api_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "endpoint", "params", "url"],
+        "properties": {
+          "name": {"type": "string"},
+          "purpose": {"type": "string"},
+          "endpoint": {"type": "string"},
+          "url": {"type": "string"},
+          "params": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "fetch_log": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/trialRecord"
+      }
+    },
+    "unresolved_questions": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "trialRecord": {
+      "type": "object",
+      "required": ["trial_id", "source", "title", "phase", "status", "pico", "url"],
+      "properties": {
+        "trial_id": {"type": "string"},
+        "source": {"type": "string"},
+        "title": {"type": "string"},
+        "official_title": {"type": "string"},
+        "url": {"type": "string"},
+        "phase": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "status": {"type": "string"},
+        "study_type": {"type": "string"},
+        "has_posted_results": {"type": "boolean"},
+        "relevance_score": {"type": "integer"},
+        "matched_modifiers": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "sponsor": {"type": "string"},
+        "locations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "location_summary": {"type": "string"},
+        "pico": {
+          "type": "object",
+          "required": ["P", "I", "C", "O"],
+          "properties": {
+            "P": {"type": "object", "additionalProperties": true},
+            "I": {"type": "object", "additionalProperties": true},
+            "C": {"type": "object", "additionalProperties": true},
+            "O": {"type": "object", "additionalProperties": true}
+          },
+          "additionalProperties": false
+        },
+        "evidence": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

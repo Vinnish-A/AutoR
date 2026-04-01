@@ -1,0 +1,42 @@
+# Data & index (not tracked)
+data/
+workspace/
+!.claude/skills/workspace/
+
+# Python
+__pycache__/
+*__pycache__
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+.vscode/
+
+# Tests & IDE
+tests/
+.pytest_cache/
+.vscode/
+
+# SQLite temp files
+*.db-journal
+
+# Logs (outside data/)
+*.log
+
+# Runtime state for local service scripts
+.run/
+_*
+tmp/
+.cache/
+
+# Config with secrets
+config.local.yaml
+config.yaml
+
+# Developer docs (not published)
+docs-dev/
+
+# Backups
+*.bak

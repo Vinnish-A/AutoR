@@ -1,0 +1,302 @@
+{
+  "studies": [
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT06248086",
+          "briefTitle": "A Study to Find a Suitable Dose of ASP2802 in People With CD20-positive B-cell Lymphomas",
+          "officialTitle": "A First-in-Human, Phase 1 Study to Assess the Safety, Pharmacokinetics, Pharmacodynamics and Preliminary Efficacy of a Single-Induction Dose of convertibleCARTM-T Cells Armed With MicAbodyTM Protein (ASP2802) Followed by Maintenance Booster Doses of the MicAbody Protein in Patients With CD20-Positive Relapsed or Refractory B-Cell Lymphomas"
+        },
+        "statusModule": {
+          "overallStatus": "TERMINATED",
+          "whyStopped": "The termination of the study was a business decision made by the sponsor."
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": {
+            "name": "Astellas Pharma Global Development, Inc."
+          }
+        },
+        "descriptionModule": {
+          "briefSummary": "ASP2802 is a type of CAR-T cell therapy given with MA-20. This adaptive study evaluates a single-induction CAR-T dose followed by maintenance booster doses of MA-20 for relapsed or refractory CD20-positive B-cell lymphomas."
+        },
+        "conditionsModule": {
+          "conditions": [
+            "B-cell Lymphoma"
+          ]
+        },
+        "designModule": {
+          "studyType": "INTERVENTIONAL",
+          "phases": [
+            "PHASE1"
+          ],
+          "designInfo": {
+            "interventionModel": "SEQUENTIAL"
+          },
+          "enrollmentInfo": {
+            "count": 1,
+            "type": "ACTUAL"
+          }
+        },
+        "armsInterventionsModule": {
+          "armGroups": [
+            {
+              "label": "Group A: ASP2802 Low Dose followed by MA-20",
+              "type": "EXPERIMENTAL",
+              "description": "Participants receive ASP2802 on Day 0 and then maintenance booster doses of MA-20 in each 28-day cycle."
+            },
+            {
+              "label": "Group B: ASP2802 Intermediate Dose followed by MA-20",
+              "type": "EXPERIMENTAL",
+              "description": "Participants receive an intermediate ASP2802 dose followed by MA-20 booster dosing."
+            },
+            {
+              "label": "Group C: ASP2802 High Dose followed by MA-20",
+              "type": "EXPERIMENTAL",
+              "description": "Participants receive a higher ASP2802 dose followed by MA-20 booster dosing."
+            }
+          ],
+          "interventions": [
+            {
+              "type": "DRUG",
+              "name": "ASP2802"
+            },
+            {
+              "type": "DRUG",
+              "name": "MA-20"
+            }
+          ]
+        },
+        "outcomesModule": {
+          "primaryOutcomes": [
+            {
+              "measure": "Incidence of Dose Limiting Toxicities (DLTs)",
+              "description": "DLTs are assessed after ASP2802 infusion and subsequent MA-20 doses during dose escalation.",
+              "timeFrame": "Up to 10 months"
+            }
+          ]
+        },
+        "eligibilityModule": {
+          "eligibilityCriteria": "Adults with histologically confirmed CD20-positive relapsed or refractory B-cell lymphoma after at least 2 prior lines of therapy are eligible.",
+          "healthyVolunteers": false,
+          "sex": "ALL",
+          "minimumAge": "18 Years"
+        },
+        "contactsLocationsModule": {
+          "locations": [
+            {
+              "city": "Sydney",
+              "country": "Australia"
+            }
+          ]
+        }
+      },
+      "hasResults": false
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT05621096",
+          "briefTitle": "Low Dose Radiation as Bridging Therapy in Relapsed B-Cell Non-Hodgkin Lymphoma",
+          "officialTitle": "Feasibility of Low Dose Radiation as Bridging Therapy for Lisocabtagene Maraleucel in Relapsed B-Cell Non-Hodgkin Lymphoma"
+        },
+        "statusModule": {
+          "overallStatus": "ACTIVE_NOT_RECRUITING"
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": {
+            "name": "University of Nebraska"
+          }
+        },
+        "descriptionModule": {
+          "briefSummary": "This trial evaluates whether bridging radiation before CAR T-cell infusion is feasible and safe in relapsed B-cell lymphoma."
+        },
+        "conditionsModule": {
+          "conditions": [
+            "DLBCL - Diffuse Large B Cell Lymphoma",
+            "High-grade B-cell Lymphoma",
+            "Follicular Lymphoma",
+            "Relapsed Non-Hodgkin Lymphoma"
+          ]
+        },
+        "designModule": {
+          "studyType": "INTERVENTIONAL",
+          "phases": [
+            "PHASE1"
+          ],
+          "designInfo": {
+            "interventionModel": "SINGLE_GROUP"
+          },
+          "enrollmentInfo": {
+            "count": 33,
+            "type": "ESTIMATED"
+          }
+        },
+        "armsInterventionsModule": {
+          "armGroups": [
+            {
+              "label": "Single arm",
+              "type": "EXPERIMENTAL",
+              "description": "Subjects receive bridging radiation following pheresis and prior to lymphodepleting chemotherapy and CAR T-cell infusion."
+            }
+          ],
+          "interventions": [
+            {
+              "type": "RADIATION",
+              "name": "Bridging radiation therapy"
+            },
+            {
+              "type": "BIOLOGICAL",
+              "name": "Liso-cel"
+            },
+            {
+              "type": "RADIATION",
+              "name": "Post-infusion radiation"
+            }
+          ]
+        },
+        "outcomesModule": {
+          "primaryOutcomes": [
+            {
+              "measure": "Feasibility of the intervention in the proposed study population",
+              "description": "Percentage of subjects who proceed to CAR T-cell infusion after bridging radiation.",
+              "timeFrame": "Up to 90 days"
+            }
+          ]
+        },
+        "eligibilityModule": {
+          "eligibilityCriteria": "Adults with relapsed or progressive B-cell lymphoma who meet FDA-approved criteria for liso-cel infusion and have at least one site safe for radiation are eligible.",
+          "healthyVolunteers": false,
+          "sex": "ALL",
+          "minimumAge": "19 Years"
+        },
+        "contactsLocationsModule": {
+          "locations": [
+            {
+              "city": "Omaha",
+              "country": "United States"
+            }
+          ]
+        }
+      },
+      "hasResults": false
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT04436029",
+          "briefTitle": "Descartes-11 Consolidation Treatment in Patients With High-Risk Multiple Myeloma Who Have Residual Disease After Induction Therapy",
+          "officialTitle": "Descartes-11 Consolidation Treatment in Patients With High-Risk Multiple Myeloma Who Have Residual Disease After Induction Therapy"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED"
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": {
+            "name": "Cartesian Therapeutics"
+          }
+        },
+        "descriptionModule": {
+          "briefSummary": "This study assesses MRD-negative complete response after consolidation treatment with Descartes-11 in high-risk myeloma after induction therapy."
+        },
+        "conditionsModule": {
+          "conditions": [
+            "Multiple Myeloma"
+          ]
+        },
+        "designModule": {
+          "studyType": "INTERVENTIONAL",
+          "phases": [
+            "PHASE2"
+          ],
+          "designInfo": {
+            "interventionModel": "SINGLE_GROUP"
+          },
+          "enrollmentInfo": {
+            "count": 5,
+            "type": "ACTUAL"
+          }
+        },
+        "armsInterventionsModule": {
+          "armGroups": [
+            {
+              "label": "Descartes 11",
+              "type": "EXPERIMENTAL",
+              "description": "CAR T-cell consolidation after induction therapy."
+            }
+          ],
+          "interventions": [
+            {
+              "type": "BIOLOGICAL",
+              "name": "Descartes 11"
+            }
+          ]
+        },
+        "outcomesModule": {
+          "primaryOutcomes": [
+            {
+              "measure": "Rate of Stringent Complete Response",
+              "description": "Stringent complete response is defined according to IMWG response criteria.",
+              "timeFrame": "1 year"
+            }
+          ]
+        },
+        "eligibilityModule": {
+          "eligibilityCriteria": "Adults with high-risk multiple myeloma and residual disease after induction therapy are eligible.",
+          "healthyVolunteers": false,
+          "sex": "ALL",
+          "minimumAge": "18 Years"
+        },
+        "contactsLocationsModule": {
+          "locations": [
+            {
+              "city": "Bethesda",
+              "country": "United States"
+            },
+            {
+              "city": "Hackensack",
+              "country": "United States"
+            }
+          ]
+        }
+      },
+      "resultsSection": {
+        "outcomeMeasuresModule": {
+          "outcomeMeasures": [
+            {
+              "type": "PRIMARY",
+              "title": "Rate of Stringent Complete Response",
+              "unitOfMeasure": "Participants",
+              "timeFrame": "1 year",
+              "denoms": [
+                {
+                  "units": "Participants",
+                  "counts": [
+                    {
+                      "groupId": "OG000",
+                      "value": "4"
+                    }
+                  ]
+                }
+              ],
+              "classes": [
+                {
+                  "categories": [
+                    {
+                      "measurements": [
+                        {
+                          "groupId": "OG000",
+                          "value": "1"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "hasResults": true
+    }
+  ]
+}

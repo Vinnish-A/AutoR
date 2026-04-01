@@ -1,0 +1,397 @@
+{
+  "query": "CAR-T 序贯治疗",
+  "normalized_query": {
+    "query_label": "CAR-T 序贯治疗",
+    "theme": "CAR-T 序贯治疗",
+    "theme_english": "CAR-T sequential therapy",
+    "condition": null,
+    "intervention": "CAR-T",
+    "phase": {
+      "raw": null,
+      "tokens": [],
+      "api_expression": null
+    },
+    "status": null,
+    "location": null,
+    "modifier_concepts": [
+      "sequential"
+    ],
+    "modifier_search_terms": [
+      "sequential",
+      "maintenance",
+      "bridging",
+      "consolidation"
+    ],
+    "fallback_term": "CAR-T sequential therapy",
+    "intervention_terms": [
+      "CAR-T",
+      "car t",
+      "cart",
+      "chimeric antigen receptor t-cell",
+      "chimeric antigen receptor t-cells",
+      "嵌合抗原受体t细胞",
+      "嵌合抗原受体 t 细胞",
+      "car-t细胞",
+      "cart细胞"
+    ]
+  },
+  "provider_targets": [
+    {
+      "name": "ClinicalTrials.gov",
+      "implemented": true,
+      "access_mode": "json_api",
+      "endpoint": "https://clinicaltrials.gov/api/v2/studies",
+      "notes": "Primary live data source. Supports structured JSON via API v2.",
+      "example_request": "https://clinicaltrials.gov/api/v2/studies?format=json&pageSize=20&query.intr=CAR-T&query.term=sequential"
+    },
+    {
+      "name": "CTIS / EU CTR",
+      "implemented": false,
+      "access_mode": "public_search_portal",
+      "search_url": "https://euclinicaltrials.eu/search-for-clinical-trials/",
+      "legacy_search_url": "https://www.clinicaltrialsregister.eu/ctr-search/search",
+      "notes": "No stable public REST API verified; community tooling usually scrapes the web interface.",
+      "suggested_query": "CAR-T sequential therapy"
+    },
+    {
+      "name": "ChiCTR",
+      "implemented": false,
+      "access_mode": "public_search_portal",
+      "search_url": "https://www.chictr.org.cn/searchprojEN.html",
+      "notes": "No official open REST API verified; individual records can be exported from the website and community tools scrape filtered URLs.",
+      "suggested_query": "CAR-T sequential therapy"
+    },
+    {
+      "name": "WHO ICTRP",
+      "implemented": false,
+      "access_mode": "portal_plus_request_web_service",
+      "search_url": "https://trialsearch.who.int/",
+      "web_service_url": "https://www.who.int/tools/clinical-trials-registry-platform/the-ictrp-search-portal/ictrp-search-portal-web-service",
+      "notes": "Public search portal is open; XML web service access is by request rather than a self-service public API.",
+      "suggested_query": "CAR-T sequential therapy"
+    }
+  ],
+  "api_requests": [
+    {
+      "name": "modifier-1",
+      "purpose": "modifier expansion: sequential",
+      "endpoint": "https://clinicaltrials.gov/api/v2/studies",
+      "params": {
+        "format": "json",
+        "pageSize": 20,
+        "query.intr": "CAR-T",
+        "query.term": "sequential"
+      },
+      "max_pages": 2,
+      "url": "https://clinicaltrials.gov/api/v2/studies?format=json&pageSize=20&query.intr=CAR-T&query.term=sequential"
+    },
+    {
+      "name": "modifier-2",
+      "purpose": "modifier expansion: maintenance",
+      "endpoint": "https://clinicaltrials.gov/api/v2/studies",
+      "params": {
+        "format": "json",
+        "pageSize": 20,
+        "query.intr": "CAR-T",
+        "query.term": "maintenance"
+      },
+      "max_pages": 2,
+      "url": "https://clinicaltrials.gov/api/v2/studies?format=json&pageSize=20&query.intr=CAR-T&query.term=maintenance"
+    },
+    {
+      "name": "modifier-3",
+      "purpose": "modifier expansion: bridging",
+      "endpoint": "https://clinicaltrials.gov/api/v2/studies",
+      "params": {
+        "format": "json",
+        "pageSize": 20,
+        "query.intr": "CAR-T",
+        "query.term": "bridging"
+      },
+      "max_pages": 2,
+      "url": "https://clinicaltrials.gov/api/v2/studies?format=json&pageSize=20&query.intr=CAR-T&query.term=bridging"
+    },
+    {
+      "name": "modifier-4",
+      "purpose": "modifier expansion: consolidation",
+      "endpoint": "https://clinicaltrials.gov/api/v2/studies",
+      "params": {
+        "format": "json",
+        "pageSize": 20,
+        "query.intr": "CAR-T",
+        "query.term": "consolidation"
+      },
+      "max_pages": 2,
+      "url": "https://clinicaltrials.gov/api/v2/studies?format=json&pageSize=20&query.intr=CAR-T&query.term=consolidation"
+    }
+  ],
+  "fetch_log": [
+    {
+      "name": "fixture",
+      "url": "/mnt/f/tmp/skills/clinical-trials-retrieval/examples/cart-sequential-api-sample.json",
+      "returned_studies": 3,
+      "unique_total": 3
+    }
+  ],
+  "results": [
+    {
+      "trial_id": "NCT06248086",
+      "source": "ClinicalTrials.gov",
+      "title": "A Study to Find a Suitable Dose of ASP2802 in People With CD20-positive B-cell Lymphomas",
+      "official_title": "A First-in-Human, Phase 1 Study to Assess the Safety, Pharmacokinetics, Pharmacodynamics and Preliminary Efficacy of a Single-Induction Dose of convertibleCARTM-T Cells Armed With MicAbodyTM Protein (ASP2802) Followed by Maintenance Booster Doses of the MicAbody Protein in Patients With CD20-Positive Relapsed or Refractory B-Cell Lymphomas",
+      "url": "https://clinicaltrials.gov/study/NCT06248086",
+      "phase": [
+        "PHASE1"
+      ],
+      "status": "TERMINATED",
+      "study_type": "INTERVENTIONAL",
+      "has_posted_results": false,
+      "relevance_score": 21,
+      "matched_modifiers": [
+        "design:SEQUENTIAL",
+        "maintenance",
+        "booster",
+        "followed by"
+      ],
+      "sponsor": "Astellas Pharma Global Development, Inc.",
+      "locations": [
+        {
+          "city": "Sydney",
+          "country": "Australia",
+          "facility": "unknown"
+        }
+      ],
+      "pico": {
+        "P": {
+          "conditions": [
+            "B-cell Lymphoma"
+          ],
+          "enrollment": {
+            "count": 1,
+            "type": "ACTUAL"
+          },
+          "sex": "ALL",
+          "minimum_age": "18 Years",
+          "maximum_age": "unknown",
+          "eligibility_excerpt": "Adults with histologically confirmed CD20-positive relapsed or refractory B-cell lymphoma after at least 2 prior lines of therapy are eligible."
+        },
+        "I": {
+          "interventions": [
+            "ASP2802",
+            "MA-20"
+          ],
+          "intervention_types": [
+            "DRUG"
+          ],
+          "arms": [
+            {
+              "label": "Group A: ASP2802 Low Dose followed by MA-20",
+              "type": "EXPERIMENTAL",
+              "description": "Participants receive ASP2802 on Day 0 and then maintenance booster doses of MA-20 in each 28-day cycle."
+            },
+            {
+              "label": "Group B: ASP2802 Intermediate Dose followed by MA-20",
+              "type": "EXPERIMENTAL",
+              "description": "Participants receive an intermediate ASP2802 dose followed by MA-20 booster dosing."
+            },
+            {
+              "label": "Group C: ASP2802 High Dose followed by MA-20",
+              "type": "EXPERIMENTAL",
+              "description": "Participants receive a higher ASP2802 dose followed by MA-20 booster dosing."
+            }
+          ]
+        },
+        "C": {
+          "comparators": [],
+          "summary": "multi-arm study without explicit comparator labels"
+        },
+        "O": {
+          "primary_endpoints": [
+            {
+              "measure": "Incidence of Dose Limiting Toxicities (DLTs)",
+              "description": "DLTs are assessed after ASP2802 infusion and subsequent MA-20 doses during dose escalation.",
+              "time_frame": "Up to 10 months"
+            }
+          ],
+          "effect_summary": "unknown"
+        }
+      },
+      "location_summary": "Sydney, Australia",
+      "evidence": [
+        "Status: TERMINATED.",
+        "Phase: PHASE1.",
+        "Intervention(s): ASP2802, MA-20.",
+        "Primary endpoint: Incidence of Dose Limiting Toxicities (DLTs) (Up to 10 months).",
+        "Sequential signals: design:SEQUENTIAL, maintenance, booster, followed by."
+      ]
+    },
+    {
+      "trial_id": "NCT05621096",
+      "source": "ClinicalTrials.gov",
+      "title": "Low Dose Radiation as Bridging Therapy in Relapsed B-Cell Non-Hodgkin Lymphoma",
+      "official_title": "Feasibility of Low Dose Radiation as Bridging Therapy for Lisocabtagene Maraleucel in Relapsed B-Cell Non-Hodgkin Lymphoma",
+      "url": "https://clinicaltrials.gov/study/NCT05621096",
+      "phase": [
+        "PHASE1"
+      ],
+      "status": "ACTIVE_NOT_RECRUITING",
+      "study_type": "INTERVENTIONAL",
+      "has_posted_results": false,
+      "relevance_score": 8,
+      "matched_modifiers": [
+        "bridging",
+        "prior to"
+      ],
+      "sponsor": "University of Nebraska",
+      "locations": [
+        {
+          "city": "Omaha",
+          "country": "United States",
+          "facility": "unknown"
+        }
+      ],
+      "pico": {
+        "P": {
+          "conditions": [
+            "DLBCL - Diffuse Large B Cell Lymphoma",
+            "High-grade B-cell Lymphoma",
+            "Follicular Lymphoma",
+            "Relapsed Non-Hodgkin Lymphoma"
+          ],
+          "enrollment": {
+            "count": 33,
+            "type": "ESTIMATED"
+          },
+          "sex": "ALL",
+          "minimum_age": "19 Years",
+          "maximum_age": "unknown",
+          "eligibility_excerpt": "Adults with relapsed or progressive B-cell lymphoma who meet FDA-approved criteria for liso-cel infusion and have at least one site safe for radiation are eligible."
+        },
+        "I": {
+          "interventions": [
+            "Bridging radiation therapy",
+            "Liso-cel",
+            "Post-infusion radiation"
+          ],
+          "intervention_types": [
+            "RADIATION",
+            "BIOLOGICAL"
+          ],
+          "arms": [
+            {
+              "label": "Single arm",
+              "type": "EXPERIMENTAL",
+              "description": "Subjects receive bridging radiation following pheresis and prior to lymphodepleting chemotherapy and CAR T-cell infusion."
+            }
+          ]
+        },
+        "C": {
+          "comparators": [],
+          "summary": "single-arm / no explicit comparator"
+        },
+        "O": {
+          "primary_endpoints": [
+            {
+              "measure": "Feasibility of the intervention in the proposed study population",
+              "description": "Percentage of subjects who proceed to CAR T-cell infusion after bridging radiation.",
+              "time_frame": "Up to 90 days"
+            }
+          ],
+          "effect_summary": "unknown"
+        }
+      },
+      "location_summary": "Omaha, United States",
+      "evidence": [
+        "Status: ACTIVE_NOT_RECRUITING.",
+        "Phase: PHASE1.",
+        "Intervention(s): Bridging radiation therapy, Liso-cel, Post-infusion radiation.",
+        "Primary endpoint: Feasibility of the intervention in the proposed study population (Up to 90 days).",
+        "Sequential signals: bridging, prior to."
+      ]
+    },
+    {
+      "trial_id": "NCT04436029",
+      "source": "ClinicalTrials.gov",
+      "title": "Descartes-11 Consolidation Treatment in Patients With High-Risk Multiple Myeloma Who Have Residual Disease After Induction Therapy",
+      "official_title": "Descartes-11 Consolidation Treatment in Patients With High-Risk Multiple Myeloma Who Have Residual Disease After Induction Therapy",
+      "url": "https://clinicaltrials.gov/study/NCT04436029",
+      "phase": [
+        "PHASE2"
+      ],
+      "status": "COMPLETED",
+      "study_type": "INTERVENTIONAL",
+      "has_posted_results": true,
+      "relevance_score": 5,
+      "matched_modifiers": [
+        "consolidation"
+      ],
+      "sponsor": "Cartesian Therapeutics",
+      "locations": [
+        {
+          "city": "Bethesda",
+          "country": "United States",
+          "facility": "unknown"
+        },
+        {
+          "city": "Hackensack",
+          "country": "United States",
+          "facility": "unknown"
+        }
+      ],
+      "pico": {
+        "P": {
+          "conditions": [
+            "Multiple Myeloma"
+          ],
+          "enrollment": {
+            "count": 5,
+            "type": "ACTUAL"
+          },
+          "sex": "ALL",
+          "minimum_age": "18 Years",
+          "maximum_age": "unknown",
+          "eligibility_excerpt": "Adults with high-risk multiple myeloma and residual disease after induction therapy are eligible."
+        },
+        "I": {
+          "interventions": [
+            "Descartes 11"
+          ],
+          "intervention_types": [
+            "BIOLOGICAL"
+          ],
+          "arms": [
+            {
+              "label": "Descartes 11",
+              "type": "EXPERIMENTAL",
+              "description": "CAR T-cell consolidation after induction therapy."
+            }
+          ]
+        },
+        "C": {
+          "comparators": [],
+          "summary": "single-arm / no explicit comparator"
+        },
+        "O": {
+          "primary_endpoints": [
+            {
+              "measure": "Rate of Stringent Complete Response",
+              "description": "Stringent complete response is defined according to IMWG response criteria.",
+              "time_frame": "1 year"
+            }
+          ],
+          "effect_summary": "Rate of Stringent Complete Response: 1/4 Participants (1 year)"
+        }
+      },
+      "location_summary": "Bethesda, United States; Hackensack, United States",
+      "evidence": [
+        "Status: COMPLETED.",
+        "Phase: PHASE2.",
+        "Intervention(s): Descartes 11.",
+        "Primary endpoint: Rate of Stringent Complete Response (1 year).",
+        "Sequential signals: consolidation.",
+        "Posted result summary: Rate of Stringent Complete Response: 1/4 Participants (1 year)."
+      ]
+    }
+  ],
+  "unresolved_questions": []
+}
