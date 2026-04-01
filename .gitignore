@@ -30,6 +30,7 @@ tests/
 _*
 tmp/
 .cache/
+autor-mcp.pid
 
 # Config with secrets
 config.local.yaml

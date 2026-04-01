@@ -15,7 +15,7 @@
 
 ---
 
-Your coding agent can already read code, write code, and run experiments. autor adds a structured literature knowledge base so the same agent can also search papers, cross-check results, reproduce published methods, and draft manuscripts. One terminal, one agent, one end-to-end research workflow.
+Auto Review. Author without human. One terminal, one agent, one end-to-end research workflow.
 
 <!-- TODO: Add demo GIF -->
 <!-- <div align="center">
@@ -26,7 +26,7 @@ Your coding agent can already read code, write code, and run experiments. autor 
 
 ```bash
 # 1. Install
-git clone https://github.com/ZimoLiao/autor.git && cd autor
+git clone https://github.com/Vinnish-A/AutoR.git && cd AutoR
 pip install -e ".[full]"
 
 # 2. Configure
