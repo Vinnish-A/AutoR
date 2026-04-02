@@ -66,7 +66,11 @@ WSL will try to detect Windows PowerShell automatically. If your environment is 
 | **Citation Graph** | References and influence | Forward/backward citations and shared-reference analysis |
 | **Layered Reading** | Load on demand | L1 metadata → L2 abstract → L3 conclusion → L4 full text |
 | **Multi-source Import** | Bring your existing library | Endnote XML/RIS, Zotero (API + SQLite, including collection → workspace mapping), PDF, Markdown — with more sources on the way |
-| **Workspace** | Organize by project | Manage subsets of papers, search within scope, and export BibTeX |
+| **Workspace** | Organize by project | Manage subsets of papers, search within scope, and export BibTeX / RIS / Markdown / DOCX |
+| **Federated Search** | Search beyond one silo | `autor fsearch` queries the main library, `explore` datasets, and arXiv together |
+| **Translation** | Read across languages | `autor translate` preserves formulas, code blocks, and images while translating Markdown papers |
+| **Office Documents** | Inspect and ingest DOCX/PPTX/XLSX | `autor document inspect` checks layout and content; Office files can also flow through the document inbox |
+| **Research Insights** | Learn from your own workflow | `autor insights` surfaces hot queries, frequently read papers, reading trends, and semantic neighbors |
 | **Academic Writing** | AI-assisted drafting | Literature reviews, paper sections, citation verification, reviewer responses, research-gap analysis — every citation remains traceable to your own library |
 | **MCP Server** | 31 tools | Works with Claude Desktop, Cursor, and other MCP clients |
 
@@ -94,9 +98,9 @@ autor is designed to be **agent-agnostic**. It already ships with ready-to-use i
 | [GitHub Copilot](https://github.com/features/copilot) | Instruction wrapper | `.github/copilot-instructions.md` |
 | [Codex](https://openai.com/codex) / OpenClaw | Full instructions + skills | `AGENTS.md` + `.agents/skills/` |
 
-The **MCP server** (`autor-mcp`, 31 tools) works with any MCP-compatible client. Skills follow the open [AgentSkills.io](https://agentskills.io) standard — `.agents/skills/` is a symlink to `.claude/skills/` for easier cross-agent discovery.
+The **MCP server** (`autor-mcp`, 31 tools) works with any MCP-compatible client. Skills follow the open [AgentSkills.io](https://agentskills.io) standard — `.agents/skills/` and `.claude/skills/` mirror the canonical `.github/skills/` tree for easier cross-agent discovery.
 
-For a quick overview of all built-in skills, see [`SKILLS_CN.md`](SKILLS_CN.md). If you are new to the project, start with `autor-overview`.
+For a quick overview of built-in skills, see `.github/skills/`, `CLAUDE.md`, or `AGENTS.md`. If you are new to the project, start with `autor-overview`.
 
 **Migrating from existing tools?** You can import directly from Endnote (XML/RIS) and Zotero (Web API or local SQLite) — PDFs, metadata, and citation relationships all come along. More import sources are under active development.
 
@@ -145,34 +149,40 @@ Full configuration reference → [`config.yaml`](config.yaml)
 <summary><strong>CLI command reference</strong></summary>
 
 ```
-autor index              Build the FTS5 search index
-autor search QUERY       Keyword search
-autor search-author NAME Search by author
-autor vsearch QUERY      Semantic vector search
-autor usearch QUERY      Hybrid search (keyword + semantic)
-autor show PAPER         View paper content (L1-L4)
-autor embed              Generate semantic vectors
-autor pipeline           Run the ingest pipeline
-autor explore            Explore journals with OpenAlex
-autor topics             BERTopic topic modeling
-autor refs PAPER         View references
-autor citing PAPER       View citing papers
-autor shared-refs A B    Shared-reference analysis
-autor top-cited          Sort by citation count
-autor refetch            Refresh citation counts
-autor export             Export BibTeX
-autor ws                 Workspace management
-autor audit              Audit data quality
-autor repair             Repair metadata
-autor rename             Standardize directory names
-autor enrich-toc         Extract table of contents
-autor enrich-l3          Extract conclusion section
-autor backfill-abstract  Fill in missing abstracts
-autor import-endnote     Import from Endnote
-autor import-zotero      Import from Zotero
-autor attach-pdf         Attach a PDF to an existing paper
-autor setup              Environment setup wizard
-autor metrics            View LLM usage statistics
+autor search QUERY         Keyword search
+autor vsearch QUERY        Semantic vector search
+autor usearch QUERY        Hybrid search
+autor search-author NAME   Search by author
+autor top-cited            Rank by citation count
+autor show PAPER           View paper content (L1-L4)
+autor refs PAPER           View references
+autor citing PAPER         View citing papers
+autor shared-refs A B      Shared-reference analysis
+autor fsearch QUERY        Federated search across library / explore / arXiv
+autor pipeline PRESET      Run the ingest pipeline
+autor index                Build the FTS5 search index
+autor embed                Generate semantic vectors
+autor enrich-toc           Extract table of contents
+autor enrich-l3            Extract conclusion section
+autor backfill-abstract    Fill in missing abstracts
+autor refetch              Refresh citation counts
+autor translate PAPER      Translate markdown papers
+autor explore ...          OpenAlex exploration workflow
+autor topics               BERTopic topic modeling
+autor export ...           Export BibTeX / RIS / Markdown / DOCX
+autor ws ...               Workspace management
+autor import-endnote       Import from Endnote
+autor import-zotero        Import from Zotero
+autor attach-pdf           Attach a PDF to an existing paper
+autor citation-check FILE  Verify in-text citations
+autor style ...            Manage citation styles
+autor document inspect ... Inspect DOCX / PPTX / XLSX
+autor audit                Audit data quality
+autor repair               Repair metadata
+autor rename               Standardize directory names
+autor setup                Environment setup wizard
+autor insights             View research behavior insights
+autor metrics              View LLM usage statistics
 ```
 
 </details>
@@ -181,7 +191,7 @@ autor metrics            View LLM usage statistics
 
 ```
 autor/          # Python package
-  cli.py             # CLI entry point (29 subcommands)
+  cli.py             # CLI entry point (35 top-level commands)
   mcp_server.py      # MCP server (31 tools)
   ingest/            # PDF parsing + metadata pipeline
   index.py           # FTS5 full-text search
@@ -190,12 +200,15 @@ autor/          # Python package
   loader.py          # L1-L4 layered loading
   explore.py         # OpenAlex literature exploration
   workspace.py       # Workspace management
-  export.py          # BibTeX export
+  export.py          # BibTeX / RIS / Markdown / DOCX export
   audit.py           # Data quality auditing
+  citation_check.py  # Citation verification
+  document.py        # Office document inspection
+  translate.py       # Paper translation
 
-.github/skills/      # enchanced agent skills (AgentSkills.io format)
-.codex/skills/       # enchanced agent skills (AgentSkills.io format)
-.agents/skills/      # ↑ symlink for cross-agent discovery
+.github/skills/      # Canonical agent skills (35 total)
+.claude/skills/      # Mirror for Claude / Cline
+.agents/skills/      # Mirror for Codex / OpenClaw
 data/papers/         # Your paper library (not tracked in git)
 data/inbox/          # Drop PDFs here to ingest them
 ```

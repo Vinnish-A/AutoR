@@ -16,7 +16,6 @@ audit.py — 已入库论文数据质量审计
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -37,6 +36,7 @@ class Issue:
         rule: 检查规则名称。
         message: 问题描述。
     """
+
     paper_id: str
     severity: str  # "error" | "warning" | "info"
     rule: str
@@ -64,10 +64,10 @@ def audit_papers(papers_dir: Path) -> list[Issue]:
 
         try:
             from autor.papers import read_meta
+
             data = read_meta(pdir)
         except Exception as e:
-            issues.append(Issue(pid, "error", "invalid_json",
-                                f"JSON 解析失败: {e}"))
+            issues.append(Issue(pid, "error", "invalid_json", f"JSON 解析失败: {e}"))
             continue
 
         # -- Missing fields --
@@ -75,8 +75,7 @@ def audit_papers(papers_dir: Path) -> list[Issue]:
 
         # -- File pairing --
         if not md_file.exists():
-            issues.append(Issue(pid, "error", "missing_md",
-                                "缺少 paper.md 文件"))
+            issues.append(Issue(pid, "error", "missing_md", "缺少 paper.md 文件"))
         else:
             _check_content_consistency(issues, pid, data, md_file)
 
@@ -93,8 +92,7 @@ def audit_papers(papers_dir: Path) -> list[Issue]:
         if len(pids) > 1:
             for pid in pids:
                 others = [p for p in pids if p != pid]
-                issues.append(Issue(pid, "error", "duplicate_doi",
-                                    f"DOI 重复: {doi} (同: {', '.join(others)})"))
+                issues.append(Issue(pid, "error", "duplicate_doi", f"DOI 重复: {doi} (同: {', '.join(others)})"))
 
     # Sort: error > warning > info
     severity_order = {"error": 0, "warning": 1, "info": 2}
@@ -105,6 +103,7 @@ def audit_papers(papers_dir: Path) -> list[Issue]:
 def _check_missing(issues: list[Issue], pid: str, data: dict) -> None:
     """Check for missing critical fields."""
     from autor.ingest.metadata._doc_extract import DOCUMENT_TYPES
+
     paper_type = data.get("paper_type", "")
     if not data.get("doi") and paper_type not in DOCUMENT_TYPES:
         issues.append(Issue(pid, "warning", "missing_doi", "缺少 DOI"))
@@ -120,23 +119,25 @@ def _check_missing(issues: list[Issue], pid: str, data: dict) -> None:
         issues.append(Issue(pid, "error", "missing_title", "缺少标题"))
 
 
-
 def _check_content_consistency(
-    issues: list[Issue], pid: str, data: dict, md_path: Path,
+    issues: list[Issue],
+    pid: str,
+    data: dict,
+    md_path: Path,
 ) -> None:
     """Check consistency between JSON metadata and MD content."""
     try:
         md_text = md_path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         _log.debug("failed to read paper.md for %s: %s", pid, e)
-        issues.append(Issue(pid, "error", "unreadable_md",
-                            "无法读取 paper.md 文件"))
+        issues.append(Issue(pid, "error", "unreadable_md", "无法读取 paper.md 文件"))
         return
 
     # MD too short (likely conversion failure)
     if len(md_text.strip()) < 200:
-        issues.append(Issue(pid, "warning", "short_md",
-                            f"paper.md 文件过短 ({len(md_text.strip())} 字符)，可能转换失败"))
+        issues.append(
+            Issue(pid, "warning", "short_md", f"paper.md 文件过短 ({len(md_text.strip())} 字符)，可能转换失败")
+        )
 
     # Title vs first H1 mismatch
     json_title = (data.get("title") or "").strip().lower()
@@ -150,10 +151,16 @@ def _check_content_consistency(
             if json_words and md_words:
                 overlap = len(json_words & md_words) / max(len(json_words), 1)
                 if overlap < 0.3:
-                    issues.append(Issue(pid, "warning", "title_mismatch",
-                                        f"JSON 标题与 MD H1 不一致\n"
-                                        f"  JSON: {data['title'][:80]}\n"
-                                        f"  MD H1: {h1_match.group(1).strip()[:80]}"))
+                    issues.append(
+                        Issue(
+                            pid,
+                            "warning",
+                            "title_mismatch",
+                            f"JSON 标题与 MD H1 不一致\n"
+                            f"  JSON: {data['title'][:80]}\n"
+                            f"  MD H1: {h1_match.group(1).strip()[:80]}",
+                        )
+                    )
 
 
 def _check_filename(issues: list[Issue], pid: str, data: dict) -> None:
@@ -161,15 +168,17 @@ def _check_filename(issues: list[Issue], pid: str, data: dict) -> None:
     # Expected: Author-Year-Title
     m = re.match(r"^(.+?)-(\d{4})-(.+)$", pid)
     if not m:
-        issues.append(Issue(pid, "info", "nonstandard_filename",
-                            "目录名不符合 Author-Year-Title 格式"))
+        issues.append(Issue(pid, "info", "nonstandard_filename", "目录名不符合 Author-Year-Title 格式"))
         return
 
     file_year = int(m.group(2))
     json_year = data.get("year")
     if json_year and file_year != json_year:
-        issues.append(Issue(pid, "warning", "filename_year_mismatch",
-                            f"目录名年份 ({file_year}) 与 JSON 年份 ({json_year}) 不一致"))
+        issues.append(
+            Issue(
+                pid, "warning", "filename_year_mismatch", f"目录名年份 ({file_year}) 与 JSON 年份 ({json_year}) 不一致"
+            )
+        )
 
 
 def format_report(issues: list[Issue]) -> str:

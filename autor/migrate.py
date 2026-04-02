@@ -40,10 +40,7 @@ def migrate_to_dirs(papers_dir: Path, *, dry_run: bool = True) -> dict[str, int]
         return stats
 
     # Find flat JSON files (not inside subdirectories)
-    flat_jsons = sorted(
-        p for p in papers_dir.glob("*.json")
-        if p.is_file() and p.parent == papers_dir
-    )
+    flat_jsons = sorted(p for p in papers_dir.glob("*.json") if p.is_file() and p.parent == papers_dir)
 
     if not flat_jsons:
         _log.info("没有找到需要迁移的平铺文件")
@@ -87,6 +84,7 @@ def migrate_to_dirs(papers_dir: Path, *, dry_run: bool = True) -> dict[str, int]
 
         # Write meta.json with UUID
         from autor.papers import write_meta
+
         write_meta(target_dir, data)
 
         # Move .md if exists

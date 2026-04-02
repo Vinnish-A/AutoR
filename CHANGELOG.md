@@ -1,0 +1,135 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Added
+
+- **AutoR upstream sync**: pulled the latest useful upstream `scholaraio` features into AutoR while preserving the AutoR fork's MCP server, `autor-mcp` entry point, and AutoR-only skills
+- **Semantic Scholar API key support**: Configure `ingest.s2_api_key` (or env var `S2_API_KEY`) to authenticate Semantic Scholar requests, increasing rate limits from 100 req/5min (public) to 1 req/s (authenticated); polite delay automatically reduced from 3s to 1s when key is present
+
+### Fixed
+
+- **Zotero LaTeX filename too long** ([#32](https://github.com/Vinnish-A/AutoR/issues/32)): Titles containing LaTeX math (e.g. `$\mathrm{La}{\mathrm{BH}}_8$`) or HTML/MathML entities now get properly cleaned before directory naming; added 255-byte filename length limit as safety net
+
+## [1.1.0] — 2026-03-24
+
+### Added
+
+- **Patent literature management**: New `data/inbox-patent/` inbox for patent documents; automatic publication number extraction (CN/US/EP/WO/JP/KR/DE/FR/GB/TW/IN/AU + more formats); deduplication by publication number; `paper_type: patent` auto-tagging; `publication_number` field in `PaperMetadata` and `papers_registry`
+- **Paper translation** (`translate` CLI + skill): LLM-based markdown translation preserving LaTeX formulas, code blocks, and images; language detection heuristic; configurable defaults (`config.yaml` `translate` section) with per-call `--lang`/`--force` override; single paper and batch modes; `show --lang` to view translated versions; `pipeline --steps translate` for batch processing
+- **Federated search** (`fsearch` CLI + `federated_search` MCP tool): search across main library, explore silos (`explore:NAME` / `explore:*`), and arXiv in a single command; arXiv results annotated with "已入库" when DOI matches the main library
+- **arXiv source module** (`sources/arxiv.py`): shared Atom API client using `defusedxml` for safe XML parsing
+- **Insights analytics** (`autor insights`): behavior dashboard showing top search keywords, most-read papers, weekly reading trend, semantic neighbor recommendations, and active workspaces with paper counts
+- **Metrics recording for search/read**: `search`, `usearch`, `vsearch`, and `show` commands now record events to `metrics.db` for behavior analysis
+- **`MetricsStore.query_distinct_names()`**: efficient distinct-name query with supporting `(category, name)` index, used by insights recommendations
+- **Skill YAML front matter**: all 35 bundled skills now carry standardized `version`/`author`/`license`/`tags` metadata; upstream additions such as `document`, `draw`, `insights`, `translate`, and `writing-polish` are included alongside AutoR-only skills
+- **clawhub.yaml**: marketplace manifest listing all available skills for discovery
+- **`explore fetch --limit`**: cap the number of papers fetched from OpenAlex (useful for quick sampling)
+- **`attach-pdf --dry-run`**: preview what `attach-pdf` will do without actually running MinerU conversion
+- **`document inspect`** (`autor document inspect <file>`): inspect Office documents (DOCX/PPTX/XLSX) showing structure, layout, content preview, and overflow warnings; new `document.py` module with `inspect_pptx`/`inspect_docx`/`inspect_xlsx` functions
+- **Office format ingest**: `inbox-doc/` now accepts `.docx`, `.xlsx`, `.pptx` files; new `step_office_convert` pipeline step converts them to Markdown via MarkItDown before ingestion
+- **RIS export**: `export ris` outputs RIS format compatible with Zotero, Endnote, and Mendeley (zero dependencies)
+- **Markdown reference list export**: `export markdown` generates formatted reference lists with configurable citation styles (APA, Vancouver, Chicago, MLA); supports ordered/unordered lists
+- **DOCX export**: `export docx` converts any Markdown content to a Word `.docx` file, supporting headings, paragraphs, tables, lists, code blocks, and bold/italic text
+- **Citation styles module** (`citation_styles.py`): manages built-in (APA/Vancouver/Chicago/MLA) and custom citation formats; custom styles loaded from `data/citation_styles/*.py` with path-traversal protection
+- **draw skill** (`.claude/skills/draw/`): generate diagrams (Mermaid flowcharts, sequence diagrams, ER diagrams, Gantt charts, mind maps) and vector graphics (cli-anything-inkscape); outputs to `workspace/figures/`
+- **`[office]` optional dependency group**: `markitdown[docx,pptx,xlsx]` + `python-docx`
+
+### Fixed
+
+- **Chicago citation format**: empty authors list no longer causes `IndexError`; condition reordered to check `not authors` first (consistent with APA/Vancouver)
+- **Federated search DOI annotation**: `WHERE doi IN (...)` replaced with `WHERE LOWER(doi) IN (...)` in `cli.py`, preventing false negatives when stored DOIs have different casing
+- **`insights --days` validation**: replaced `args.days or 30` with explicit `days <= 0` check; `--days 0` or negative values now produce a clear error instead of silently defaulting to 30
+
+- CLI error messages and output text unified to Chinese
+- `citation_styles`: `show_style()`, `list_styles()`, `get_formatter()` error messages Chinese-ified; Google-style docstrings added
+- **Translation same-language skip**: language detection now recognizes common German/French/Spanish inputs, avoiding unnecessary same-language translation calls for supported targets
+
+## [1.0.0] — 2026-03-14
+
+### Added
+
+- **Workspace batch add**: `ws add` now supports `--search "<query>"`, `--topic <id>`, and `--all` flags for bulk paper addition, with `--top`/`--year`/`--journal`/`--type` filter support
+- **Agent analysis notes (T2)**: Per-paper `notes.md` for persistent cross-session analysis notes; `loader.load_notes()` and `loader.append_notes()` API
+- **PDF optional dependency**: `pymupdf` declared in `pyproject.toml` as `[pdf]` extra (included in `[full]`), fixing undeclared dependency for long PDF splitting
+- **Subagent information tiers**: T1/T2/T3 architecture documented in CLAUDE.md and AGENTS.md for structured context management
+- **Context management guidance**: Workspace skill and 4 academic writing skills updated with notes.md read/write workflow and large-content delegation guidelines
+
+### Fixed
+
+- **MCP `build_topics`**: `nr_topics=0` now correctly maps to `"auto"` (automatic topic merging/reduction) instead of `None` (no reduction); added `-1` as explicit "no reduction" value
+
+## [0.1.0] — 2026-03-13
+
+### Knowledge Base
+
+- PDF ingestion via MinerU (cloud API / local), with auto-splitting for long PDFs (>100 pages)
+- Three inboxes: regular papers (`inbox/`), theses (`inbox-thesis/`), general documents (`inbox-doc/`)
+- DOI-based deduplication; unresolved papers held in `pending/` for manual review
+- Metadata extraction with 4 modes: regex, auto (regex + LLM fallback), robust (regex + LLM cross-check), llm
+- API-based metadata enrichment (Crossref, Semantic Scholar, OpenAlex)
+- L1–L4 layered content loading (metadata → abstract → conclusion → full text)
+- FTS5 full-text search index
+- FAISS semantic search with Qwen3-Embedding-0.6B, GPU-adaptive batch profiling
+- Unified search with Reciprocal Rank Fusion (RRF) combining keyword + semantic results
+- Author search and top-cited paper ranking
+- BibTeX export with year/journal filtering
+- Data quality audit with structured issue reports and LLM-assisted repair
+- BERTopic topic modeling with 6 HTML visualizations (hierarchy, 2D map, barchart, heatmap, term rank, topics over time)
+- Citation graph queries (references, citing papers, shared references)
+- Citation count fetching from Semantic Scholar / OpenAlex APIs
+- Workspace management for organizing paper subsets (search, export within workspace)
+
+### Content Enrichment
+
+- Table of contents (TOC) extraction via LLM
+- Conclusion (L3) extraction via LLM, with skip logic for non-article types (thesis, book, document, etc.)
+- Abstract backfill via LLM for papers missing abstracts
+- Concurrent LLM calls for batch enrichment (configurable worker count)
+
+### Literature Exploration
+
+- Multi-dimensional OpenAlex exploration (ISSN, concept, topic, author, institution, source type, year range, min citations)
+- Isolated explore datasets (`data/explore/<name>/`) with independent FTS5 + FAISS + BERTopic
+- Explore-specific unified/semantic/keyword search
+
+### Import & Export
+
+- Endnote import (XML and RIS formats)
+- Zotero import (Web API and local SQLite)
+- PDF attachment to existing papers
+- BibTeX export with filtering by year, journal, or paper IDs
+
+### LLM & Embedding
+
+- Multi-LLM backend support: OpenAI-compatible (DeepSeek/OpenAI/vLLM/Ollama), Anthropic (Claude), Google (Gemini)
+- API key resolution: config → environment variable → vendor-specific env vars
+- LLM token usage and API call timing via MetricsStore
+- GPU-adaptive batch embedding with automatic profiling and OOM fallback
+
+### AI Agent Integration
+
+- 22 Claude Code skills following AgentSkills.io open standard
+- MCP server with 31 tools
+- CLI with 35 top-level commands (`autor --help`)
+- Multi-agent compatibility: AGENTS.md, .cursorrules, .windsurfrules, .clinerules, .github/copilot-instructions.md
+- Claude Code plugin packaging (`.claude-plugin/plugin.json`, `marketplace.json`)
+- SessionStart hook for auto-installing dependencies in plugin mode
+- Global config fallback (`~/.autor/`) for plugin usage outside the project repo
+
+### Project Infrastructure
+
+- Bilingual setup wizard (EN/ZH) with environment diagnostics
+- Code quality toolchain: ruff linter/formatter, mypy type checking, pre-commit hooks
+- CI workflow: lint, typecheck, test matrix (Python 3.10–3.12)
+- Contract-level test suite (36 tests across 6 modules)
+- Community governance: CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md
+- GitHub issue/PR templates (bug report, feature request)
+- CITATION.cff for academic citation
+- MkDocs documentation site with API reference (mkdocstrings)
+- Release workflow for PyPI publishing (trusted OIDC)

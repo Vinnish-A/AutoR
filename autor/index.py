@@ -53,18 +53,24 @@ CREATE TABLE IF NOT EXISTS papers_hash (
 
 _REGISTRY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers_registry (
-    id           TEXT PRIMARY KEY,
-    dir_name     TEXT NOT NULL UNIQUE,
-    title        TEXT,
-    doi          TEXT,
-    year         INTEGER,
-    first_author TEXT
+    id                   TEXT PRIMARY KEY,
+    dir_name             TEXT NOT NULL UNIQUE,
+    title                TEXT,
+    doi                  TEXT,
+    publication_number   TEXT,
+    year                 INTEGER,
+    first_author         TEXT
 );
 """
 
 _REGISTRY_DOI_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_doi
     ON papers_registry(doi) WHERE doi IS NOT NULL AND doi != '';
+"""
+
+_REGISTRY_PUBNUM_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_publication_number
+    ON papers_registry(publication_number) WHERE publication_number IS NOT NULL AND publication_number != '';
 """
 
 _CITATIONS_SCHEMA = """
@@ -76,7 +82,9 @@ CREATE TABLE IF NOT EXISTS citations (
 );
 """
 _CITATIONS_IDX_TARGET_DOI = "CREATE INDEX IF NOT EXISTS idx_cit_target_doi ON citations(target_doi);"
-_CITATIONS_IDX_TARGET_ID = "CREATE INDEX IF NOT EXISTS idx_cit_target_id ON citations(target_id) WHERE target_id IS NOT NULL;"
+_CITATIONS_IDX_TARGET_ID = (
+    "CREATE INDEX IF NOT EXISTS idx_cit_target_id ON citations(target_id) WHERE target_id IS NOT NULL;"
+)
 
 
 def _index_hash(meta: dict) -> str:
@@ -90,6 +98,7 @@ def _index_hash(meta: dict) -> str:
         meta.get("l3_conclusion") or "",
         meta.get("doi") or "",
         meta.get("paper_type") or "",
+        ((meta.get("ids") or {}).get("patent_publication_number", "") or ""),
     ]
     cc = meta.get("citation_count")
     if cc and isinstance(cc, dict):
@@ -117,8 +126,8 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
     Returns:
         本次索引的论文数量。
     """
-    import json as _json
-    from autor.papers import iter_paper_dirs, read_meta as _read_meta
+    from autor.papers import iter_paper_dirs
+    from autor.papers import read_meta as _read_meta
 
     conn = sqlite3.connect(db_path)
     try:
@@ -131,6 +140,33 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
             conn.execute(_REGISTRY_DOI_INDEX)
         except sqlite3.OperationalError:
             pass  # index already exists
+        # Migrate: add publication_number column if missing (pre-existing DB)
+        try:
+            conn.execute("SELECT publication_number FROM papers_registry LIMIT 0")
+        except sqlite3.OperationalError:
+            try:
+                conn.execute("ALTER TABLE papers_registry ADD COLUMN publication_number TEXT")
+            except sqlite3.OperationalError:
+                pass
+        try:
+            conn.execute(_REGISTRY_PUBNUM_INDEX)
+        except sqlite3.OperationalError:
+            pass
+        except sqlite3.IntegrityError:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "cannot create UNIQUE index on publication_number: duplicate values exist; "
+                "falling back to non-unique index"
+            )
+            try:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_registry_publication_number "
+                    "ON papers_registry(publication_number) "
+                    "WHERE publication_number IS NOT NULL AND publication_number != ''"
+                )
+            except sqlite3.OperationalError:
+                pass
         try:
             conn.execute(_CITATIONS_IDX_TARGET_DOI)
         except sqlite3.OperationalError:
@@ -150,9 +186,7 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
         # Load existing hashes for incremental change detection
         existing_hashes: dict[str, str] = {}
         if not rebuild:
-            for row in conn.execute(
-                "SELECT paper_id, content_hash FROM papers_hash"
-            ).fetchall():
+            for row in conn.execute("SELECT paper_id, content_hash FROM papers_hash").fetchall():
                 existing_hashes[row[0]] = row[1]
 
         count = 0
@@ -197,24 +231,77 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
                 (paper_id, h),
             )
 
-            # Update papers_registry
+            # Update papers_registry — use ON CONFLICT(id) DO UPDATE so that
+            # a publication_number UNIQUE violation is surfaced rather than
+            # silently deleting a different paper's row (which INSERT OR REPLACE
+            # would do when the new pub_num collides with another id's row).
             dir_name = pdir.name
-            conn.execute(
-                """INSERT OR REPLACE INTO papers_registry
-                   (id, dir_name, title, doi, year, first_author)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    paper_id,
-                    dir_name,
-                    meta.get("title") or "",
-                    meta.get("doi") or "",
-                    meta.get("year"),
-                    meta.get("first_author_lastname") or "",
-                ),
-            )
+            pub_num = ((meta.get("ids") or {}).get("patent_publication_number", "") or "").upper().strip()
+            try:
+                doi_norm = (meta.get("doi") or "").lower().strip()
+                conn.execute(
+                    """INSERT INTO papers_registry
+                       (id, dir_name, title, doi, publication_number, year, first_author)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                           dir_name=excluded.dir_name,
+                           title=excluded.title,
+                           doi=excluded.doi,
+                           publication_number=excluded.publication_number,
+                           year=excluded.year,
+                           first_author=excluded.first_author""",
+                    (
+                        paper_id,
+                        dir_name,
+                        meta.get("title") or "",
+                        doi_norm,
+                        pub_num,
+                        meta.get("year"),
+                        meta.get("first_author_lastname") or "",
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                import logging
+
+                _idx_log = logging.getLogger(__name__)
+                err_msg = str(exc).lower()
+                if "publication_number" in err_msg and pub_num:
+                    _idx_log.warning(
+                        "publication_number %r for paper %s conflicts with another paper; "
+                        "storing without publication_number",
+                        pub_num,
+                        paper_id,
+                    )
+                    conn.execute(
+                        """INSERT INTO papers_registry
+                           (id, dir_name, title, doi, publication_number, year, first_author)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(id) DO UPDATE SET
+                               dir_name=excluded.dir_name,
+                               title=excluded.title,
+                               doi=excluded.doi,
+                               publication_number=excluded.publication_number,
+                               year=excluded.year,
+                               first_author=excluded.first_author""",
+                        (
+                            paper_id,
+                            dir_name,
+                            meta.get("title") or "",
+                            doi_norm,
+                            "",  # clear conflicting pub_num
+                            meta.get("year"),
+                            meta.get("first_author_lastname") or "",
+                        ),
+                    )
+                else:
+                    _idx_log.warning(
+                        "IntegrityError for paper %s: %s; skipping registry update",
+                        paper_id,
+                        exc,
+                    )
 
             # Insert references into citations table
-            refs = meta.get("references") or []
+            refs = _reference_dois(meta.get("references") or [])
             if refs:
                 conn.execute("DELETE FROM citations WHERE source_id = ?", (paper_id,))
                 conn.executemany(
@@ -241,11 +328,39 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
 _SEARCH_COLS = "paper_id, title, authors, year, journal, doi, paper_type, citation_count"
 
 
+def _reference_dois(refs: list) -> list[str]:
+    """Extract DOI strings from heterogeneous reference entries.
+
+    Supports both the canonical list[str] shape and dict entries that may
+    come from manually curated metadata or external APIs.
+    """
+    dois: list[str] = []
+    for ref in refs:
+        doi = ""
+        if isinstance(ref, str):
+            doi = ref
+        elif isinstance(ref, dict):
+            external_ids = ref.get("externalIds")
+            if not isinstance(external_ids, dict):
+                external_ids = {}
+            external_ids_alt = ref.get("external_ids")
+            if not isinstance(external_ids_alt, dict):
+                external_ids_alt = {}
+            doi = (
+                str(ref.get("doi") or "")
+                or str(ref.get("DOI") or "")
+                or str(external_ids.get("DOI") or "")
+                or str(external_ids_alt.get("DOI") or "")
+            )
+        doi = (doi or "").strip().lower()
+        if doi:
+            dois.append(doi)
+    return dois
+
+
 def _ensure_fts_table(conn: sqlite3.Connection) -> None:
     """Raise FileNotFoundError if the FTS5 papers table does not exist."""
-    has_table = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='papers'"
-    ).fetchone()
+    has_table = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers'").fetchone()
     if not has_table:
         raise FileNotFoundError("FTS5 索引表不存在，请先运行 `autor index`")
 
@@ -288,9 +403,7 @@ def search(
         top_k = cfg.search.top_k if cfg is not None else 20
 
     if not db_path.exists():
-        raise FileNotFoundError(
-            f"索引文件不存在：{db_path}\n请先运行 `autor index`"
-        )
+        raise FileNotFoundError(f"索引文件不存在：{db_path}\n请先运行 `autor index`")
 
     conn = sqlite3.connect(db_path)
     try:
@@ -351,9 +464,7 @@ def search_author(
         top_k = cfg.search.top_k if cfg is not None else 20
 
     if not db_path.exists():
-        raise FileNotFoundError(
-            f"索引文件不存在：{db_path}\n请先运行 `autor index`"
-        )
+        raise FileNotFoundError(f"索引文件不存在：{db_path}\n请先运行 `autor index`")
 
     conn = sqlite3.connect(db_path)
     try:
@@ -410,9 +521,7 @@ def top_cited(
         FileNotFoundError: 索引文件或 FTS5 表不存在。
     """
     if not db_path.exists():
-        raise FileNotFoundError(
-            f"索引文件不存在：{db_path}\n请先运行 `autor index`"
-        )
+        raise FileNotFoundError(f"索引文件不存在：{db_path}\n请先运行 `autor index`")
 
     conn = sqlite3.connect(db_path)
     try:
@@ -506,9 +615,7 @@ def _safe_query(query: str) -> str:
 
 def _enrich_dir_names(results: list[dict], conn: sqlite3.Connection) -> list[dict]:
     """Enrich search results with dir_name from papers_registry."""
-    has_reg = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='papers_registry'"
-    ).fetchone()
+    has_reg = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers_registry'").fetchone()
     if not has_reg:
         return results
     id_to_dir: dict[str, str] = {}
@@ -520,11 +627,14 @@ def _enrich_dir_names(results: list[dict], conn: sqlite3.Connection) -> list[dic
 
 
 def lookup_paper(db_path: Path, user_input: str) -> dict | None:
-    """查找论文：支持 UUID、dir_name、DOI。
+    """查找论文：支持 UUID、dir_name、DOI、专利公开号。
+
+    按以下顺序尝试匹配: UUID → dir_name → DOI → publication_number。
+    公开号查询会自动归一化为大写。
 
     Args:
         db_path: SQLite 数据库路径。
-        user_input: UUID、目录名或 DOI。
+        user_input: UUID、目录名、DOI 或专利公开号。
 
     Returns:
         ``papers_registry`` 行字典，找不到时返回 ``None``。
@@ -540,23 +650,37 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
             return None
         conn.row_factory = sqlite3.Row
         # Try UUID
-        row = conn.execute(
-            "SELECT * FROM papers_registry WHERE id = ?", (user_input,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM papers_registry WHERE id = ?", (user_input,)).fetchone()
         if row:
             return dict(row)
         # Try dir_name
-        row = conn.execute(
-            "SELECT * FROM papers_registry WHERE dir_name = ?", (user_input,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM papers_registry WHERE dir_name = ?", (user_input,)).fetchone()
         if row:
             return dict(row)
-        # Try DOI
+        # Try DOI (new DBs store lowercase DOI; old DBs may still contain mixed case)
+        normalized_doi = user_input.strip().lower()
         row = conn.execute(
-            "SELECT * FROM papers_registry WHERE doi = ?", (user_input,)
+            "SELECT * FROM papers_registry WHERE doi = ?",
+            (normalized_doi,),
         ).fetchone()
+        if not row:
+            # Backward compatibility for pre-normalization registries.
+            row = conn.execute(
+                "SELECT * FROM papers_registry WHERE LOWER(doi) = ?",
+                (normalized_doi,),
+            ).fetchone()
         if row:
             return dict(row)
+        # Try patent publication number (normalize to uppercase)
+        try:
+            row = conn.execute(
+                "SELECT * FROM papers_registry WHERE publication_number = ?",
+                (user_input.upper().strip(),),
+            ).fetchone()
+            if row:
+                return dict(row)
+        except sqlite3.OperationalError:
+            pass  # column may not exist in old DB
     finally:
         conn.close()
     return None
@@ -603,8 +727,13 @@ def unified_search(
     fts_results: list[dict] = []
     try:
         fts_results = search(
-            query, db_path, top_k=top_k, cfg=cfg,
-            year=year, journal=journal, paper_type=paper_type,
+            query,
+            db_path,
+            top_k=top_k,
+            cfg=cfg,
+            year=year,
+            journal=journal,
+            paper_type=paper_type,
             paper_ids=paper_ids,
         )
     except FileNotFoundError:
@@ -614,9 +743,15 @@ def unified_search(
     vec_results: list[dict] = []
     try:
         from autor.vectors import vsearch
+
         vec_results = vsearch(
-            query, db_path, top_k=top_k, cfg=cfg,
-            year=year, journal=journal, paper_type=paper_type,
+            query,
+            db_path,
+            top_k=top_k,
+            cfg=cfg,
+            year=year,
+            journal=journal,
+            paper_type=paper_type,
             paper_ids=paper_ids,
         )
     except (FileNotFoundError, ImportError):
@@ -719,9 +854,7 @@ def get_citing_papers(
     try:
         conn.row_factory = sqlite3.Row
         # Get DOI of target paper
-        row = conn.execute(
-            "SELECT doi FROM papers_registry WHERE id = ?", (paper_id,)
-        ).fetchone()
+        row = conn.execute("SELECT doi FROM papers_registry WHERE id = ?", (paper_id,)).fetchone()
         target_doi = row["doi"] if row else ""
 
         # Find papers that cite this paper (by target_id or target_doi)

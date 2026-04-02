@@ -83,12 +83,7 @@ def _zotero_item_to_meta(item_data: dict, source_label: str) -> PaperMetadata:
     first_author = authors[0] if authors else ""
     first_author_lastname = _extract_lastname(first_author) if first_author else ""
 
-    journal = (
-        item_data.get("publicationTitle")
-        or item_data.get("proceedingsTitle")
-        or item_data.get("bookTitle")
-        or ""
-    )
+    journal = item_data.get("publicationTitle") or item_data.get("proceedingsTitle") or item_data.get("bookTitle") or ""
 
     item_type = item_data.get("itemType", "")
     paper_type = _ITEM_TYPE_MAP.get(item_type, item_type)
@@ -158,10 +153,7 @@ def fetch_zotero_api(
         items = zot.everything(zot.items(**kwargs))
 
     # Filter out attachments and notes (keep only top-level items)
-    items = [
-        it for it in items
-        if it.get("data", {}).get("itemType") not in ("attachment", "note", "linkAttachment")
-    ]
+    items = [it for it in items if it.get("data", {}).get("itemType") not in ("attachment", "note", "linkAttachment")]
 
     records: list[PaperMetadata] = []
     pdf_paths: list[Path | None] = []
@@ -186,7 +178,7 @@ def fetch_zotero_api(
                         # Use dump() to download the file
                         filename = cd.get("filename", f"{item['key']}.pdf")
                         out_path = target / filename
-                        zot.dump(child["key"], filename, target)
+                        zot.dump(child["key"], filename, str(target))
                         if out_path.exists():
                             pdf_path = out_path
                         break
@@ -364,7 +356,7 @@ def _find_local_pdf(conn: sqlite3.Connection, parent_id: int, storage_dir: Path)
         att_key = r["key"]
         # Zotero stores paths as "storage:<filename>"
         if raw_path.startswith("storage:"):
-            filename = raw_path[len("storage:"):]
+            filename = raw_path[len("storage:") :]
             pdf_path = storage_dir / att_key / filename
             if pdf_path.exists():
                 return pdf_path
@@ -395,9 +387,6 @@ def list_collections_local(db_path: Path) -> list[dict]:
             "GROUP BY c.collectionID "
             "ORDER BY c.collectionName",
         ).fetchall()
-        return [
-            {"key": r["key"], "name": r["collectionName"], "numItems": r["numItems"]}
-            for r in rows
-        ]
+        return [{"key": r["key"], "name": r["collectionName"], "numItems": r["numItems"]} for r in rows]
     finally:
         conn.close()

@@ -1,0 +1,59 @@
+site_name: AutoR
+site_description: AutoR — Author without human
+site_url: https://vinnish-a.github.io/AutoR/
+repo_url: https://github.com/Vinnish-A/AutoR
+repo_name: Vinnish-A/AutoR
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.highlight
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Agent Setup: getting-started/agent-setup.md
+      - Configuration: getting-started/configuration.md
+  - User Guide:
+      - Search & Browse: guide/search.md
+      - Ingestion: guide/ingestion.md
+      - Writing: guide/writing.md
+      - Webtools Integration: guide/webtools-integration.md
+  - Contributing: contributing.md
+  - Changelog: changelog.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: false
+            show_root_heading: true
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true

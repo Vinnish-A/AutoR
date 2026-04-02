@@ -5,8 +5,8 @@ sources/local.py — 扫描 data/papers/ 目录，产出论文记录
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from autor.papers import iter_paper_dirs, read_meta
 

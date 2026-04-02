@@ -263,8 +263,4 @@ def extract_pdf_map(xml_paths: list[Path]) -> dict[str, Path]:
         ``{doi: pdf_path}`` 映射，仅包含 DOI 和 PDF 均存在的记录。
     """
     records, pdf_paths = parse_endnote_full(xml_paths)
-    return {
-        r.doi: p
-        for r, p in zip(records, pdf_paths)
-        if r.doi and p is not None
-    }
+    return {r.doi: p for r, p in zip(records, pdf_paths) if r.doi and p is not None}

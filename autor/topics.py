@@ -14,14 +14,14 @@ topics.py — BERTopic 主题建模
 
 from __future__ import annotations
 
-import json
 import logging
 import pickle
 import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from autor.papers import best_citation as _best_cite, read_meta as _read_meta
+from autor.papers import best_citation as _best_cite
+from autor.papers import read_meta as _read_meta
 from autor.vectors import _unpack
 
 _log = logging.getLogger(__name__)
@@ -33,11 +33,14 @@ if TYPE_CHECKING:
 def _patch_pandas_datetime():
     """Pandas 3.0 compat: BERTopic uses removed infer_datetime_format."""
     import pandas as pd
+
     if not getattr(pd.to_datetime, "_autor_patched", False):
         _orig_dt = pd.to_datetime
+
         def _patched_dt(*a, **kw):
             kw.pop("infer_datetime_format", None)
             return _orig_dt(*a, **kw)
+
         _patched_dt._autor_patched = True
         pd.to_datetime = _patched_dt
 
@@ -47,7 +50,7 @@ def _load_embeddings_and_docs(
     papers_dir: Path | None = None,
     *,
     papers_map: dict[str, dict] | None = None,
-) -> tuple[list[str], list[str], list[dict], "np.ndarray"]:
+) -> tuple[list[str], list[str], list[dict], np.ndarray]:
     """从 DB 加载向量，从 JSON 或 papers_map 加载文档文本和元数据。
 
     Args:
@@ -111,23 +114,23 @@ def _load_embeddings_and_docs(
 
             paper_ids.append(paper_id)
             docs.append(text)
-            metas.append({
-                "paper_id": paper_id,
-                "title": title,
-                "authors": authors,
-                "year": p.get("year", ""),
-                "journal": p.get("journal", ""),
-                "citation_count": cite,
-            })
+            metas.append(
+                {
+                    "paper_id": paper_id,
+                    "title": title,
+                    "authors": authors,
+                    "year": p.get("year", ""),
+                    "journal": p.get("journal", ""),
+                    "citation_count": cite,
+                }
+            )
             vecs.append(_unpack(blob))
     else:
         # Main library mode: metadata from meta.json files
         id_to_dir: dict[str, str] = {}
         try:
             reg_conn = sqlite3.connect(db_path)
-            for row in reg_conn.execute(
-                "SELECT id, dir_name FROM papers_registry"
-            ).fetchall():
+            for row in reg_conn.execute("SELECT id, dir_name FROM papers_registry").fetchall():
                 id_to_dir[row[0]] = row[1]
             reg_conn.close()
         except Exception as e:
@@ -154,14 +157,16 @@ def _load_embeddings_and_docs(
 
             paper_ids.append(paper_id)
             docs.append(text)
-            metas.append({
-                "paper_id": paper_id,
-                "title": title,
-                "authors": ", ".join(meta.get("authors") or []),
-                "year": meta.get("year", ""),
-                "journal": meta.get("journal", ""),
-                "citation_count": meta.get("citation_count", {}),
-            })
+            metas.append(
+                {
+                    "paper_id": paper_id,
+                    "title": title,
+                    "authors": ", ".join(meta.get("authors") or []),
+                    "year": meta.get("year", ""),
+                    "journal": meta.get("journal", ""),
+                    "citation_count": meta.get("citation_count", {}),
+                }
+            )
             vecs.append(_unpack(blob))
 
     embeddings = np.array(vecs, dtype="float32")
@@ -175,7 +180,7 @@ def _load_embeddings_and_docs(
 
 def _fit_bertopic(
     docs: list[str],
-    embeddings: "np.ndarray",
+    embeddings: np.ndarray,
     *,
     min_topic_size: int = 5,
     nr_topics: int | str | None = "auto",
@@ -186,7 +191,7 @@ def _fit_bertopic(
     min_df: int = 2,
     top_n_words: int = 10,
     cfg: Config | None = None,
-) -> tuple["BERTopic", list[int]]:
+) -> tuple[BERTopic, list[int]]:
     """Fit a BERTopic model with the given hyperparameters.
 
     Core BERTopic pipeline shared by both the main library (``build_topics``)
@@ -209,7 +214,6 @@ def _fit_bertopic(
     Returns:
         ``(topic_model, topics)`` — fitted model and topic assignments.
     """
-    import numpy as np  # noqa: F811
 
     from bertopic import BERTopic
     from bertopic.representation import KeyBERTInspired, MaximalMarginalRelevance
@@ -267,11 +271,10 @@ def _fit_bertopic(
     n_outliers_before = sum(1 for t in topics if t == -1)
     n_real_topics = len(set(topics) - {-1})
     if n_outliers_before > 0 and n_real_topics > 0:
-        topics = topic_model.reduce_outliers(
-            docs, topics, strategy="embeddings", embeddings=embeddings
-        )
+        topics = topic_model.reduce_outliers(docs, topics, strategy="embeddings", embeddings=embeddings)
         topic_model.update_topics(
-            docs, topics=topics,
+            docs,
+            topics=topics,
             vectorizer_model=vectorizer_model,
             representation_model=representation_model,
         )
@@ -291,7 +294,7 @@ def build_topics(
     save_path: Path | None = None,
     cfg: Config | None = None,
     **fit_kwargs,
-) -> "BERTopic":
+) -> BERTopic:
     """构建 BERTopic 主题模型。
 
     复用 ``paper_vectors`` 表中已有的嵌入向量，不重新编码。
@@ -312,7 +315,9 @@ def build_topics(
         训练好的 BERTopic 模型实例。
     """
     paper_ids, docs, metas, embeddings = _load_embeddings_and_docs(
-        db_path, papers_dir, papers_map=papers_map,
+        db_path,
+        papers_dir,
+        papers_map=papers_map,
     )
     _log.info("Loaded vectors and text for %d papers", len(docs))
 
@@ -330,7 +335,8 @@ def build_topics(
                 nr_topics = tc.nr_topics
 
     topic_model, topics = _fit_bertopic(
-        docs, embeddings,
+        docs,
+        embeddings,
         min_topic_size=min_topic_size,
         nr_topics=nr_topics,
         cfg=cfg,
@@ -361,7 +367,7 @@ def build_topics(
 # ============================================================================
 
 
-def get_topic_overview(model: "BERTopic") -> list[dict]:
+def get_topic_overview(model: BERTopic) -> list[dict]:
     """获取所有主题的概览信息。
 
     Args:
@@ -393,19 +399,21 @@ def get_topic_overview(model: "BERTopic") -> list[dict]:
 
         papers.sort(key=_best_cite, reverse=True)
 
-        overview.append({
-            "topic_id": tid,
-            "count": int(row["Count"]),
-            "name": row.get("Name", ""),
-            "keywords": keywords,
-            "representative_papers": papers[:5],
-        })
+        overview.append(
+            {
+                "topic_id": tid,
+                "count": int(row["Count"]),
+                "name": row.get("Name", ""),
+                "keywords": keywords,
+                "representative_papers": papers[:5],
+            }
+        )
 
     overview.sort(key=lambda x: x["count"], reverse=True)
     return overview
 
 
-def get_topic_papers(model: "BERTopic", topic_id: int) -> list[dict]:
+def get_topic_papers(model: BERTopic, topic_id: int) -> list[dict]:
     """获取指定主题的全部论文。
 
     Args:
@@ -427,7 +435,7 @@ def get_topic_papers(model: "BERTopic", topic_id: int) -> list[dict]:
     return papers
 
 
-def get_outliers(model: "BERTopic") -> list[dict]:
+def get_outliers(model: BERTopic) -> list[dict]:
     """获取未被归入任何主题的论文（outlier，topic_id == -1）。
 
     Args:
@@ -439,7 +447,7 @@ def get_outliers(model: "BERTopic") -> list[dict]:
     return get_topic_papers(model, topic_id=-1)
 
 
-def find_related_topics(model: "BERTopic", paper_id: str) -> list[dict]:
+def find_related_topics(model: BERTopic, paper_id: str) -> list[dict]:
     """查找与指定论文最相关的其他主题。
 
     通过论文所属主题的相似度矩阵，找出关联最强的主题。
@@ -469,6 +477,7 @@ def find_related_topics(model: "BERTopic", paper_id: str) -> list[dict]:
     except AttributeError:
         try:
             from sklearn.metrics.pairwise import cosine_similarity
+
             sim_matrix = cosine_similarity(model.c_tf_idf_.toarray())
         except Exception as e:
             _log.debug("failed to compute topic similarities: %s", e)
@@ -488,11 +497,13 @@ def find_related_topics(model: "BERTopic", paper_id: str) -> list[dict]:
         sim = float(sim_matrix[cur_idx][tid_to_idx[tid]])
         topic_words = model.get_topic(tid)
         keywords = [w for w, _ in topic_words[:5]] if topic_words else []
-        related.append({
-            "topic_id": tid,
-            "similarity": sim,
-            "keywords": keywords,
-        })
+        related.append(
+            {
+                "topic_id": tid,
+                "similarity": sim,
+                "keywords": keywords,
+            }
+        )
 
     related.sort(key=lambda x: x["similarity"], reverse=True)
     return related
@@ -503,7 +514,7 @@ def find_related_topics(model: "BERTopic", paper_id: str) -> list[dict]:
 # ============================================================================
 
 
-def visualize_topic_hierarchy(model: "BERTopic", docs: list[str] | None = None) -> str:
+def visualize_topic_hierarchy(model: BERTopic, docs: list[str] | None = None) -> str:
     """生成主题层级树的 HTML 可视化。
 
     Args:
@@ -517,7 +528,7 @@ def visualize_topic_hierarchy(model: "BERTopic", docs: list[str] | None = None) 
     return fig.to_html(include_plotlyjs="cdn")
 
 
-def visualize_topics_2d(model: "BERTopic") -> str:
+def visualize_topics_2d(model: BERTopic) -> str:
     """生成主题 2D 散点图（每篇论文一个点，同 topic 同色）。
 
     Args:
@@ -537,9 +548,8 @@ def visualize_topics_2d(model: "BERTopic") -> str:
         return fig.to_html(include_plotlyjs="cdn")
 
     from umap import UMAP
-    reduced = UMAP(
-        n_components=2, min_dist=0.0, metric="cosine", random_state=42
-    ).fit_transform(embeddings)
+
+    reduced = UMAP(n_components=2, min_dist=0.0, metric="cosine", random_state=42).fit_transform(embeddings)
 
     # Build hover labels: Author (Year) Title
     hover_labels = []
@@ -587,7 +597,7 @@ def visualize_topics_2d(model: "BERTopic") -> str:
     return fig.to_html(include_plotlyjs="cdn")
 
 
-def visualize_barchart(model: "BERTopic", top_n_topics: int = 10) -> str:
+def visualize_barchart(model: BERTopic, top_n_topics: int = 10) -> str:
     """生成主题关键词条形图的 HTML 可视化。
 
     Args:
@@ -597,12 +607,11 @@ def visualize_barchart(model: "BERTopic", top_n_topics: int = 10) -> str:
     Returns:
         Plotly HTML 字符串。
     """
-    fig = model.visualize_barchart(top_n_topics=top_n_topics, n_words=8,
-                                   width=280, height=280)
+    fig = model.visualize_barchart(top_n_topics=top_n_topics, n_words=8, width=280, height=280)
     return fig.to_html(include_plotlyjs="cdn")
 
 
-def visualize_heatmap(model: "BERTopic") -> str:
+def visualize_heatmap(model: BERTopic) -> str:
     """生成主题间相似度热力图的 HTML 可视化。
 
     Args:
@@ -616,7 +625,7 @@ def visualize_heatmap(model: "BERTopic") -> str:
     return fig.to_html(include_plotlyjs="cdn")
 
 
-def visualize_term_rank(model: "BERTopic") -> str:
+def visualize_term_rank(model: BERTopic) -> str:
     """生成主题词频排名曲线的 HTML 可视化。
 
     Args:
@@ -629,7 +638,7 @@ def visualize_term_rank(model: "BERTopic") -> str:
     return fig.to_html(include_plotlyjs="cdn")
 
 
-def visualize_topics_over_time(model: "BERTopic") -> str:
+def visualize_topics_over_time(model: BERTopic) -> str:
     """生成主题随时间变化趋势的 HTML 可视化。
 
     利用论文的发表年份，按时间分箱统计各主题的论文数变化。
@@ -667,7 +676,9 @@ def visualize_topics_over_time(model: "BERTopic") -> str:
     return fig.to_html(include_plotlyjs="cdn")
 
 
-def reduce_topics_to(model: "BERTopic", nr_topics: int, save_path: Path | None = None, cfg: Config | None = None) -> "BERTopic":
+def reduce_topics_to(
+    model: BERTopic, nr_topics: int, save_path: Path | None = None, cfg: Config | None = None
+) -> BERTopic:
     """在已有模型上快速合并主题到指定数量（不重新聚类）。
 
     Args:
@@ -679,8 +690,6 @@ def reduce_topics_to(model: "BERTopic", nr_topics: int, save_path: Path | None =
     Returns:
         合并后的 BERTopic 模型实例。
     """
-    import numpy as np
-
     docs = getattr(model, "_docs", [])
     if not docs:
         raise ValueError("模型中缺少文档数据，无法合并主题")
@@ -707,11 +716,11 @@ def reduce_topics_to(model: "BERTopic", nr_topics: int, save_path: Path | None =
 
 
 def merge_topics_by_ids(
-    model: "BERTopic",
+    model: BERTopic,
     topics_to_merge: list[list[int]],
     save_path: Path | None = None,
     cfg: Config | None = None,
-) -> "BERTopic":
+) -> BERTopic:
     """手动合并指定主题（供 Claude Code 调用）。
 
     Args:
@@ -724,8 +733,6 @@ def merge_topics_by_ids(
     Returns:
         合并后的 BERTopic 模型实例。
     """
-    import numpy as np
-
     docs = getattr(model, "_docs", [])
     if not docs:
         raise ValueError("模型中缺少文档数据，无法合并主题")
@@ -756,7 +763,7 @@ def merge_topics_by_ids(
 # ============================================================================
 
 
-def _save_model(model: "BERTopic", path: Path) -> None:
+def _save_model(model: BERTopic, path: Path) -> None:
     """保存 BERTopic 模型及附加元数据。
 
     Args:
@@ -782,7 +789,7 @@ def _save_model(model: "BERTopic", path: Path) -> None:
     model.save(str(model_file), serialization="pickle", save_embedding_model=False)
 
 
-def load_model(path: Path) -> "BERTopic":
+def load_model(path: Path) -> BERTopic:
     """加载已保存的 BERTopic 模型。
 
     Args:
@@ -803,9 +810,7 @@ def load_model(path: Path) -> "BERTopic":
         if legacy.exists():
             model_file = legacy
         else:
-            raise FileNotFoundError(
-                f"主题模型不存在：{path}\n请先运行 `autor topics --build`"
-            )
+            raise FileNotFoundError(f"主题模型不存在：{path}\n请先运行 `autor topics --build`")
 
     model = BERTopic.load(str(model_file))
 

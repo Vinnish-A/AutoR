@@ -1,5 +1,5 @@
 """
-log.py -- autor 日志初始化
+log.py -- AutoR 日志初始化
 =================================
 
 提供三层输出：
@@ -14,7 +14,6 @@ import logging
 import logging.handlers
 import sys
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,11 +28,11 @@ _FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
 _CONSOLE_FMT = "%(message)s"
 
 
-def setup(cfg: "Config") -> str:
+def setup(cfg: Config) -> str:
     """初始化 root logger，返回本次会话的 session_id。
 
     Args:
-        cfg: autor 全局配置。
+        cfg: AutoR 全局配置。
 
     Returns:
         UUID4 格式的 session_id，用于关联本次所有 metrics 事件。

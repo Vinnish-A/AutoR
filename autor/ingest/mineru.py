@@ -79,14 +79,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import sys
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-
-import logging
 
 import requests
 
@@ -106,6 +104,7 @@ VALID_BACKENDS = [
     "hybrid-auto-engine",
     "hybrid-http-client",
 ]
+VALID_CLOUD_MODEL_VERSIONS = ["pipeline", "vlm", "MinerU-HTML"]
 
 DEFAULT_BACKEND = "pipeline"
 DEFAULT_LANG = "ch"
@@ -130,6 +129,7 @@ class ConvertResult:
         error: 失败时的错误信息，成功时为 ``None``。
         md_size: 输出 Markdown 的字节数。
     """
+
     pdf_path: Path
     md_path: Path | None = None
     success: bool = False
@@ -147,6 +147,8 @@ class ConvertOptions:
         api_url: MinerU 服务地址。
         output_dir: 输出目录，为 ``None`` 时与 PDF 同目录。
         backend: MinerU 解析后端（``pipeline`` | ``vlm-auto-engine`` 等）。
+        cloud_model_version: MinerU 云 API ``model_version``（``pipeline`` | ``vlm`` | ``MinerU-HTML``）。
+            留空时根据 ``backend`` 做兼容映射。
         lang: OCR 语言（``ch`` | ``en`` | ``latin`` 等）。
         parse_method: 解析方式（``auto`` | ``txt`` | ``ocr``）。
         formula_enable: 是否启用公式解析。
@@ -157,9 +159,11 @@ class ConvertOptions:
         force: 是否强制重新转换已有 ``.md`` 的文件。
         dry_run: 预览模式，不写文件。
     """
+
     api_url: str = DEFAULT_API_URL
     output_dir: Path | None = None
     backend: str = DEFAULT_BACKEND
+    cloud_model_version: str = ""
     lang: str = DEFAULT_LANG
     parse_method: str = "auto"
     formula_enable: bool = True
@@ -412,7 +416,7 @@ def convert_pdf_cloud(
     data_id = pdf_path.stem
     payload: dict = {
         "files": [{"name": pdf_path.name, "data_id": data_id}],
-        "model_version": opts.backend,
+        "model_version": _resolve_cloud_model_version(opts),
         "enable_formula": opts.formula_enable,
         "enable_table": opts.table_enable,
         "language": opts.lang,
@@ -522,9 +526,7 @@ def convert_pdf_cloud(
         if state == "done":
             md_content = _download_cloud_result(item, out_dir)
             if md_content is None:
-                result.error = (
-                    f"无法从云端结果提取 Markdown。响应键: {list(item.keys())}"
-                )
+                result.error = f"无法从云端结果提取 Markdown。响应键: {list(item.keys())}"
                 result.elapsed_seconds = time.time() - t0
                 return result
 
@@ -534,7 +536,9 @@ def convert_pdf_cloud(
             result.elapsed_seconds = time.time() - t0
             _log.info(
                 "-> [cloud] %s (%s, %.1fs)",
-                md_path.name, _fmt_size(result.md_size), result.elapsed_seconds,
+                md_path.name,
+                _fmt_size(result.md_size),
+                result.elapsed_seconds,
             )
             return result
 
@@ -581,7 +585,7 @@ def convert_pdfs_cloud_batch(
     # Split into chunks
     all_results: list[ConvertResult] = []
     for chunk_start in range(0, len(pdf_paths), batch_size):
-        chunk = pdf_paths[chunk_start:chunk_start + batch_size]
+        chunk = pdf_paths[chunk_start : chunk_start + batch_size]
         chunk_results = _convert_chunk_cloud(chunk, opts, api_key=api_key, cloud_url=cloud_url)
         all_results.extend(chunk_results)
     return all_results
@@ -631,7 +635,7 @@ def _convert_chunk_cloud(
     }
     payload: dict = {
         "files": files_payload,
-        "model_version": opts.backend,
+        "model_version": _resolve_cloud_model_version(opts),
         "enable_formula": opts.formula_enable,
         "enable_table": opts.table_enable,
         "language": opts.lang,
@@ -763,7 +767,8 @@ def _convert_chunk_cloud(
                     results[did].md_size = len(md_content.encode("utf-8"))
                     _log.info(
                         "-> [cloud] %s (%s)",
-                        md_path.name, _fmt_size(results[did].md_size),
+                        md_path.name,
+                        _fmt_size(results[did].md_size),
                     )
                 results[did].elapsed_seconds = time.time() - t0
                 done_ids.add(did)
@@ -800,6 +805,7 @@ def _flatten_assets(src_dir: Path, out_dir: Path, data_id: str) -> None:
         images_dst = out_dir / f"{data_id}_images"
         if images_dst.exists():
             import shutil
+
             shutil.rmtree(str(images_dst))
         images_src.rename(images_dst)
 
@@ -844,8 +850,7 @@ def _download_cloud_result(item: dict, out_dir: Path) -> str | None:
             import zipfile
 
             # Bypass proxy for CDN downloads (domestic CDN through proxy causes SSL errors)
-            resp = requests.get(zip_url, timeout=120,
-                                proxies={"http": None, "https": None})
+            resp = requests.get(zip_url, timeout=120, proxies={"http": None, "https": None})
             if resp.status_code == 200:
                 md_content = None
                 with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
@@ -867,8 +872,7 @@ def _download_cloud_result(item: dict, out_dir: Path) -> str | None:
     md_url = item.get("md_url")
     if md_url:
         try:
-            resp = requests.get(md_url, timeout=60,
-                                proxies={"http": None, "https": None})
+            resp = requests.get(md_url, timeout=60, proxies={"http": None, "https": None})
             if resp.status_code == 200:
                 return resp.text
         except Exception as e:
@@ -915,23 +919,23 @@ def _get_pdf_page_count(pdf_path: Path) -> int:
     """
     try:
         import pymupdf
+
         with pymupdf.open(pdf_path) as doc:
             return len(doc)
     except ImportError:
         pass
     try:
         import pikepdf
+
         with pikepdf.open(pdf_path) as pdf:
             return len(pdf.pages)
     except ImportError:
         pass
-    _log.warning("cannot detect page count (install pymupdf or pikepdf): %s",
-                 pdf_path.name)
+    _log.warning("cannot detect page count (install pymupdf or pikepdf): %s", pdf_path.name)
     return -1
 
 
-def _split_pdf(pdf_path: Path, chunk_size: int = DEFAULT_CHUNK_PAGES,
-               output_dir: Path | None = None) -> list[Path]:
+def _split_pdf(pdf_path: Path, chunk_size: int = DEFAULT_CHUNK_PAGES, output_dir: Path | None = None) -> list[Path]:
     """Split a long PDF into multiple smaller PDFs.
 
     Args:
@@ -947,10 +951,7 @@ def _split_pdf(pdf_path: Path, chunk_size: int = DEFAULT_CHUNK_PAGES,
     try:
         import pymupdf
     except ImportError:
-        raise ImportError(
-            "pymupdf is required for splitting long PDFs. "
-            "Install it with: pip install pymupdf"
-        )
+        raise ImportError("pymupdf is required for splitting long PDFs. Install it with: pip install pymupdf")
 
     page_count = _get_pdf_page_count(pdf_path)
     if page_count <= chunk_size:
@@ -978,8 +979,7 @@ def _split_pdf(pdf_path: Path, chunk_size: int = DEFAULT_CHUNK_PAGES,
             chunk_doc.close()
             chunks.append(chunk_path)
 
-    _log.info("split %s (%d pages) into %d chunks of ≤%d pages",
-              pdf_path.name, page_count, len(chunks), chunk_size)
+    _log.info("split %s (%d pages) into %d chunks of ≤%d pages", pdf_path.name, page_count, len(chunks), chunk_size)
     return chunks
 
 
@@ -1048,8 +1048,7 @@ def _merge_chunk_results(
                 new_ref = f"images/{new_name}"
                 chunk_md = chunk_md.replace(old_ref, new_ref)
                 # Also handle _mineru_images/ variant
-                for prefix in [f"{cr.md_path.stem}_mineru_images",
-                               f"{cr.md_path.stem}_images"]:
+                for prefix in [f"{cr.md_path.stem}_mineru_images", f"{cr.md_path.stem}_images"]:
                     old_ref2 = f"{prefix}/{img_file.name}"
                     chunk_md = chunk_md.replace(old_ref2, new_ref)
 
@@ -1074,8 +1073,23 @@ def _merge_chunk_results(
     return merged
 
 
-def _convert_long_pdf(pdf_path: Path, opts: ConvertOptions,
-                      chunk_size: int = DEFAULT_CHUNK_PAGES) -> ConvertResult:
+def _resolve_cloud_model_version(opts: ConvertOptions) -> str:
+    """Resolve cloud ``model_version`` from options with backward compatibility."""
+    model_version = (opts.cloud_model_version or "").strip()
+    if model_version in VALID_CLOUD_MODEL_VERSIONS:
+        return model_version
+
+    # Backward-compatible fallback from local-style backend names.
+    if opts.backend in {"vlm-auto-engine", "vlm-http-client", "vlm"}:
+        return "vlm"
+    if opts.backend in {"pipeline", "hybrid-auto-engine", "hybrid-http-client"}:
+        return "pipeline"
+
+    _log.warning("unknown cloud model_version/backend '%s', fallback to pipeline", model_version or opts.backend)
+    return "pipeline"
+
+
+def _convert_long_pdf(pdf_path: Path, opts: ConvertOptions, chunk_size: int = DEFAULT_CHUNK_PAGES) -> ConvertResult:
     """Handle a long PDF: split → convert each chunk → merge results.
 
     Uses the local MinerU API for each chunk sequentially.
@@ -1083,13 +1097,11 @@ def _convert_long_pdf(pdf_path: Path, opts: ConvertOptions,
     out_dir = opts.output_dir if opts.output_dir else pdf_path.parent
     chunks_dir = out_dir / f".{pdf_path.stem}_chunks"
 
-    chunk_paths = _split_pdf(pdf_path, chunk_size=chunk_size,
-                             output_dir=chunks_dir)
+    chunk_paths = _split_pdf(pdf_path, chunk_size=chunk_size, output_dir=chunks_dir)
 
     chunk_results: list[ConvertResult] = []
     for i, chunk_pdf in enumerate(chunk_paths):
-        _log.info("converting chunk %d/%d: %s", i + 1, len(chunk_paths),
-                  chunk_pdf.name)
+        _log.info("converting chunk %d/%d: %s", i + 1, len(chunk_paths), chunk_pdf.name)
         chunk_opts = ConvertOptions(
             api_url=opts.api_url,
             output_dir=chunks_dir,
@@ -1115,21 +1127,23 @@ def _convert_long_pdf(pdf_path: Path, opts: ConvertOptions,
 
 
 def _convert_long_pdf_cloud(
-    pdf_path: Path, opts: ConvertOptions,
+    pdf_path: Path,
+    opts: ConvertOptions,
     *,
-    api_key: str, cloud_url: str,
+    api_key: str,
+    cloud_url: str,
     chunk_size: int = DEFAULT_CHUNK_PAGES,
 ) -> ConvertResult:
     """Handle a long PDF via cloud API: split → batch upload → merge."""
     out_dir = opts.output_dir if opts.output_dir else pdf_path.parent
     chunks_dir = out_dir / f".{pdf_path.stem}_chunks"
 
-    chunk_paths = _split_pdf(pdf_path, chunk_size=chunk_size,
-                             output_dir=chunks_dir)
+    chunk_paths = _split_pdf(pdf_path, chunk_size=chunk_size, output_dir=chunks_dir)
 
     chunk_opts = ConvertOptions(
         output_dir=chunks_dir,
         backend=opts.backend,
+        cloud_model_version=opts.cloud_model_version,
         lang=opts.lang,
         parse_method=opts.parse_method,
         formula_enable=opts.formula_enable,
@@ -1137,8 +1151,10 @@ def _convert_long_pdf_cloud(
         save_content_list=opts.save_content_list,
     )
     batch_results = convert_pdfs_cloud_batch(
-        chunk_paths, chunk_opts,
-        api_key=api_key, cloud_url=cloud_url,
+        chunk_paths,
+        chunk_opts,
+        api_key=api_key,
+        cloud_url=cloud_url,
     )
 
     merged = _merge_chunk_results(batch_results, pdf_path, out_dir)
@@ -1290,41 +1306,56 @@ def _build_options(args: argparse.Namespace) -> ConvertOptions:
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add arguments shared by convert and batch subcommands."""
     parser.add_argument(
-        "-o", "--output-dir", type=str, default=None,
+        "-o",
+        "--output-dir",
+        type=str,
+        default=None,
         help="Output directory for .md files (default: same as PDF)",
     )
     parser.add_argument(
-        "--api-url", type=str, default=DEFAULT_API_URL,
+        "--api-url",
+        type=str,
+        default=DEFAULT_API_URL,
         help=f"MinerU server URL (default: {DEFAULT_API_URL})",
     )
     parser.add_argument(
-        "--backend", type=str, default=DEFAULT_BACKEND,
+        "--backend",
+        type=str,
+        default=DEFAULT_BACKEND,
         choices=VALID_BACKENDS,
         help=f"MinerU parsing backend (default: {DEFAULT_BACKEND})",
     )
     parser.add_argument(
-        "--lang", type=str, default=DEFAULT_LANG,
+        "--lang",
+        type=str,
+        default=DEFAULT_LANG,
         help=f"OCR language: ch, en, latin, etc. (default: {DEFAULT_LANG})",
     )
     parser.add_argument(
-        "--parse-method", type=str, default="auto",
+        "--parse-method",
+        type=str,
+        default="auto",
         choices=["auto", "txt", "ocr"],
         help="PDF parse method (default: auto)",
     )
     parser.add_argument(
-        "--no-formula", action="store_true",
+        "--no-formula",
+        action="store_true",
         help="Disable formula parsing",
     )
     parser.add_argument(
-        "--no-table", action="store_true",
+        "--no-table",
+        action="store_true",
         help="Disable table parsing",
     )
     parser.add_argument(
-        "--save-content-list", action="store_true",
+        "--save-content-list",
+        action="store_true",
         help="Also save content_list JSON from MinerU",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Preview what would be done, without writing files",
     )
 
@@ -1339,7 +1370,9 @@ def main() -> None:
     # --- status ---
     p_status = sub.add_parser("status", help="Check MinerU server status")
     p_status.add_argument(
-        "--api-url", type=str, default=DEFAULT_API_URL,
+        "--api-url",
+        type=str,
+        default=DEFAULT_API_URL,
         help=f"MinerU server URL (default: {DEFAULT_API_URL})",
     )
 
@@ -1347,11 +1380,15 @@ def main() -> None:
     p_convert = sub.add_parser("convert", help="Convert a single PDF to Markdown")
     p_convert.add_argument("file", type=str, help="Path to PDF file")
     p_convert.add_argument(
-        "--start-page", type=int, default=None,
+        "--start-page",
+        type=int,
+        default=None,
         help="Start page (0-indexed, default: 0)",
     )
     p_convert.add_argument(
-        "--end-page", type=int, default=None,
+        "--end-page",
+        type=int,
+        default=None,
         help="End page (0-indexed, default: all pages)",
     )
     _add_common_args(p_convert)
@@ -1360,11 +1397,14 @@ def main() -> None:
     p_batch = sub.add_parser("batch", help="Batch-convert all PDFs in a directory")
     p_batch.add_argument("directory", type=str, help="Directory containing PDF files")
     p_batch.add_argument(
-        "-r", "--recursive", action="store_true",
+        "-r",
+        "--recursive",
+        action="store_true",
         help="Recurse into subdirectories",
     )
     p_batch.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Reconvert PDFs that already have .md output",
     )
     _add_common_args(p_batch)

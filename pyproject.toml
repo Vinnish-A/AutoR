@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autor"
-version = "0.1.0"
-description = "autor — local academic literature explorer powered by AI"
+version = "1.1.0"
+description = "AutoR — local academic literature explorer powered by AI"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
@@ -25,12 +25,13 @@ classifiers = [
 dependencies = [
     "requests>=2.28",
     "pyyaml>=6.0",
+    "defusedxml>=0.7",
 ]
 
 [project.urls]
-Homepage = "https://github.com/zimoliao/autor"
-Repository = "https://github.com/zimoliao/autor"
-Issues = "https://github.com/zimoliao/autor/issues"
+Homepage = "https://github.com/Vinnish-A/AutoR"
+Repository = "https://github.com/Vinnish-A/AutoR"
+Issues = "https://github.com/Vinnish-A/AutoR/issues"
 
 [project.optional-dependencies]
 embed = [
@@ -43,9 +44,22 @@ topics = [
     "bertopic>=0.16",
     "pandas>=2.0",
 ]
+pdf = [
+    "pymupdf>=1.24",
+]
 import = [
     "endnote-utils>=1.0",
     "pyzotero>=1.5",
+]
+office = [
+    "markitdown[docx,pptx,xlsx]>=0.1",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "openpyxl>=3.1",
+]
+draw = [
+    "cli-anything-inkscape>=1.0.0",
+    "mermaid-py>=0.3",
 ]
 mcp = [
     "mcp>=1.0",
@@ -54,10 +68,20 @@ full = [
     "autor[embed]",
     "autor[topics]",
     "autor[import]",
+    "autor[pdf]",
+    "autor[office]",
     "modelscope>=1.10",
     "curl-cffi>=0.5",
 ]
-dev = ["pytest>=7.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "types-PyYAML>=6.0",
+    "types-requests>=2.28",
+    "pre-commit>=3.5",
+]
 
 [project.scripts]
 autor = "autor.cli:main"
@@ -66,3 +90,81 @@ autor-mcp = "autor.mcp_server:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["autor", "autor.*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "RUF",
+]
+ignore = [
+    "E501",
+    "SIM108",
+    "B905",
+    "UP007",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "E741",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"autor/topics.py" = ["F821"]
+"autor/*.py" = ["SIM105", "SIM102", "SIM115", "E402", "F841", "RUF059", "B904"]
+"autor/**/*.py" = ["SIM105", "SIM102", "SIM115", "E402", "F841", "RUF059", "B904"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["autor"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+warn_return_any = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "autor.topics",
+    "autor.vectors",
+    "autor.cli",
+    "autor.explore",
+    "autor.ingest.*",
+]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests that need network or heavy computation",
+]
+
+[tool.coverage.run]
+source = ["autor"]
+omit = ["autor/cli.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__",
+]

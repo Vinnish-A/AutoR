@@ -23,8 +23,9 @@ import logging
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING
 
 import requests
 
@@ -56,6 +57,45 @@ def _db_path(name: str, cfg: Config | None = None) -> Path:
     return _explore_dir(name, cfg) / "explore.db"
 
 
+def explore_db_path(name: str, cfg: Config | None = None) -> Path:
+    """Return the SQLite DB path for an explore library.
+
+    Args:
+        name: Explore library name.
+        cfg: Optional Config instance; resolved from environment if omitted.
+
+    Returns:
+        Path to ``explore.db`` inside the library directory.
+    """
+    return _db_path(name, cfg)
+
+
+def validate_explore_name(name: str) -> bool:
+    """Return True if *name* is a safe, non-traversing library identifier.
+
+    Rejects empty strings, absolute paths, and names that contain path
+    separators or ``..`` components so that callers cannot escape the
+    ``data/explore/`` directory.
+
+    Args:
+        name: Candidate explore library name supplied by the user.
+
+    Returns:
+        ``True`` when the name is safe to use in path construction.
+    """
+    if not name:
+        return False
+    import os
+
+    # Reject absolute paths and names that contain any path separator.
+    if os.path.isabs(name):
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    # Reject any name containing "..".
+    return ".." not in name
+
+
 def _meta_path(name: str, cfg: Config | None = None) -> Path:
     return _explore_dir(name, cfg) / "meta.json"
 
@@ -64,12 +104,11 @@ def _meta_path(name: str, cfg: Config | None = None) -> Path:
 #  Fetch from OpenAlex
 # ============================================================================
 
+
 def _is_boilerplate(abstract: str) -> bool:
     """Detect publisher boilerplate instead of real abstract."""
     low = abstract.lower()
-    return ("abstract is not available" in low or
-            "preview has been provided" in low or
-            "access link" in low)
+    return "abstract is not available" in low or "preview has been provided" in low or "access link" in low
 
 
 _OA_WORKS = "https://api.openalex.org/works"
@@ -122,17 +161,23 @@ def _build_filter(
         parts.append(f"primary_location.source.type:{source_type}")
     if year_range:
         parts.append(f"publication_year:{year_range}")
-    if min_citations is not None:
-        parts.append(f"cited_by_count:>={min_citations}")
+    # OpenAlex cited_by_count filter expects a meaningful lower bound.
+    # Non-positive values are treated as "no filter" to avoid invalid/odd expressions.
+    if min_citations is not None and min_citations > 0:
+        parts.append(f"cited_by_count:>{min_citations - 1}")
     if oa_type:
         parts.append(f"type:{oa_type}")
 
     return ",".join(parts), extra
 
 
-def _fetch_page(filt: str, extra_params: dict | None = None, *,
-                cursor: str = "*", keyword: str | None = None,
-                ) -> tuple[list[dict], str | None]:
+def _fetch_page(
+    filt: str,
+    extra_params: dict | None = None,
+    *,
+    cursor: str = "*",
+    keyword: str | None = None,
+) -> tuple[list[dict], str | None]:
     """Fetch one page of results from OpenAlex.
 
     Args:
@@ -145,7 +190,7 @@ def _fetch_page(filt: str, extra_params: dict | None = None, *,
         "per_page": _PER_PAGE,
         "cursor": cursor,
         "select": "id,title,publication_year,doi,authorships,abstract_inverted_index,"
-                  "primary_location,cited_by_count,type",
+        "primary_location,cited_by_count,type",
         "sort": "publication_year:asc",
     }
     if filt:
@@ -158,10 +203,9 @@ def _fetch_page(filt: str, extra_params: dict | None = None, *,
     last_exc: Exception | None = None
     for attempt in range(3):
         try:
-            resp = requests.get(_OA_WORKS, params=params, timeout=30,
-                                proxies={"http": None, "https": None})
+            resp = requests.get(_OA_WORKS, params=params, timeout=30, proxies={"http": None, "https": None})
             if resp.status_code == 429:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 _log.warning("OpenAlex 429 rate limit, retrying in %ds", wait)
                 time.sleep(wait)
                 continue
@@ -170,9 +214,8 @@ def _fetch_page(filt: str, extra_params: dict | None = None, *,
             break
         except (requests.ConnectionError, requests.Timeout) as e:
             last_exc = e
-            wait = 2 ** attempt
-            _log.warning("OpenAlex request failed (attempt %d/3): %s, retrying in %ds",
-                         attempt + 1, e, wait)
+            wait = 2**attempt
+            _log.warning("OpenAlex request failed (attempt %d/3): %s, retrying in %ds", attempt + 1, e, wait)
             time.sleep(wait)
     else:
         if last_exc:
@@ -185,7 +228,7 @@ def _fetch_page(filt: str, extra_params: dict | None = None, *,
         doi = doi_raw.replace("https://doi.org/", "") if doi_raw else ""
 
         authors = []
-        for a in (item.get("authorships") or []):
+        for a in item.get("authorships") or []:
             name = (a.get("author") or {}).get("display_name")
             if name:
                 authors.append(name)
@@ -196,16 +239,18 @@ def _fetch_page(filt: str, extra_params: dict | None = None, *,
         raw_title = item.get("title") or ""
         clean_title = re.sub(r"<[^>]+>", "", raw_title)
 
-        papers.append({
-            "openalex_id": item.get("id", ""),
-            "doi": doi,
-            "title": clean_title,
-            "abstract": abstract,
-            "authors": authors,
-            "year": item.get("publication_year"),
-            "cited_by_count": item.get("cited_by_count", 0),
-            "type": item.get("type", ""),
-        })
+        papers.append(
+            {
+                "openalex_id": item.get("id", ""),
+                "doi": doi,
+                "title": clean_title,
+                "abstract": abstract,
+                "authors": authors,
+                "year": item.get("publication_year"),
+                "cited_by_count": item.get("cited_by_count", 0),
+                "type": item.get("type", ""),
+            }
+        )
 
     next_cursor = data.get("meta", {}).get("next_cursor")
     return papers, next_cursor
@@ -225,6 +270,7 @@ def fetch_explore(
     min_citations: int | None = None,
     oa_type: str | None = None,
     incremental: bool = False,
+    limit: int | None = None,
     cfg: Config | None = None,
 ) -> int:
     """从 OpenAlex 批量拉取论文（支持多维度 filter）。
@@ -245,20 +291,29 @@ def fetch_explore(
         min_citations: 最小引用量过滤。
         oa_type: OpenAlex work type 过滤（article / review 等）。
         incremental: 为 ``True`` 时追加到现有 JSONL，基于 DOI 去重。
+        limit: 最多拉取的论文数量上限（``None`` 表示无限制）。
         cfg: 可选的全局配置。
 
     Returns:
         本次新拉取的论文数量。
     """
+    if limit is not None and limit <= 0:
+        raise ValueError(f"limit 必须为正整数，当前为: {limit}")
+
     out_dir = _explore_dir(name, cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
     papers_file = _papers_path(name, cfg)
     meta_file = _meta_path(name, cfg)
 
     filt, extra_params = _build_filter(
-        issn=issn, concept=concept, topic=topic, author=author,
-        institution=institution, source_type=source_type,
-        year_range=year_range, min_citations=min_citations,
+        issn=issn,
+        concept=concept,
+        topic=topic,
+        author=author,
+        institution=institution,
+        source_type=source_type,
+        year_range=year_range,
+        min_citations=min_citations,
         oa_type=oa_type,
     )
     if not filt and not keyword:
@@ -288,13 +343,21 @@ def fetch_explore(
         try:
             page = 0
             while cursor:
+                if limit is not None and total >= limit:
+                    break
                 page += 1
                 papers, cursor = _fetch_page(
-                    filt, extra_params, cursor=cursor, keyword=keyword,
+                    filt,
+                    extra_params,
+                    cursor=cursor,
+                    keyword=keyword,
                 )
                 if not papers:
                     break
+                written = 0
                 for p in papers:
+                    if limit is not None and total >= limit:
+                        break
                     # Skip duplicates in incremental mode (by DOI or openalex_id)
                     if incremental:
                         pid = p.get("doi", "").lower() or p.get("openalex_id", "")
@@ -302,12 +365,19 @@ def fetch_explore(
                             continue
                     f_handle.write(json.dumps(p, ensure_ascii=False) + "\n")
                     total += 1
+                    written += 1
                     if incremental:
                         pid = p.get("doi", "").lower() or p.get("openalex_id", "")
                         if pid:
                             existing_pids.add(pid)
-                _log.info("page %d: +%d papers (total %d, %.0fs)",
-                          page, len(papers), total, t.elapsed)
+                _log.info(
+                    "page %d: fetched=%d, written=%d (total %d, %.0fs)",
+                    page,
+                    len(papers),
+                    written,
+                    total,
+                    t.elapsed,
+                )
         finally:
             f_handle.close()
 
@@ -316,11 +386,18 @@ def fetch_explore(
 
     # Build query record for meta.json
     query_params: dict[str, str | int | None] = {}
-    for key, val in [("issn", issn), ("concept", concept), ("topic", topic),
-                     ("author", author), ("institution", institution),
-                     ("keyword", keyword), ("source_type", source_type),
-                     ("year_range", year_range), ("min_citations", min_citations),
-                     ("oa_type", oa_type)]:
+    for key, val in [
+        ("issn", issn),
+        ("concept", concept),
+        ("topic", topic),
+        ("author", author),
+        ("institution", institution),
+        ("keyword", keyword),
+        ("source_type", source_type),
+        ("year_range", year_range),
+        ("min_citations", min_citations),
+        ("oa_type", oa_type),
+    ]:
         if val is not None:
             query_params[key] = val
 
@@ -341,8 +418,7 @@ def fetch_explore(
         "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "elapsed_seconds": round(t.elapsed, 1),
     }
-    meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
-                         encoding="utf-8")
+    meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     ui(f"Done: {total} {'new ' if incremental else ''}papers, {t.elapsed:.0f}s -> {papers_file}")
     return total
 
@@ -369,7 +445,7 @@ def fetch_journal(
 def iter_papers(name: str, cfg: Config | None = None) -> Iterator[dict]:
     """逐行读取 JSONL，yield 论文字典。"""
     path = _papers_path(name, cfg)
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -388,6 +464,7 @@ def count_papers(name: str, cfg: Config | None = None) -> int:
 #  Embedding
 # ============================================================================
 
+
 def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | None = None) -> int:
     """为探索库生成语义向量。
 
@@ -403,7 +480,11 @@ def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | Non
         本次新嵌入的论文数量。
     """
     from autor.vectors import (
-        _append_faiss_files, _embed_batch, _ensure_schema, _load_model, _pack,
+        _append_faiss_files,
+        _embed_batch,
+        _ensure_schema,
+        _load_model,
+        _pack,
     )
 
     _load_model(cfg)
@@ -418,8 +499,7 @@ def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | Non
 
         existing = set()
         if not rebuild:
-            existing = {row[0] for row in conn.execute(
-                "SELECT paper_id FROM paper_vectors").fetchall()}
+            existing = {row[0] for row in conn.execute("SELECT paper_id FROM paper_vectors").fetchall()}
 
         to_embed: list[tuple[str, str]] = []
         for p in iter_papers(name, cfg):
@@ -440,26 +520,24 @@ def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | Non
 
         _log.info("Embedding %d papers...", len(to_embed))
 
-        batch_size = 64
+        chunk_size = 256  # DB commit chunk; GPU batching is adaptive inside _embed_batch
         total = 0
         all_new_ids: list[str] = []
         all_new_vecs: list[list[float]] = []
-        for i in range(0, len(to_embed), batch_size):
-            batch = to_embed[i:i + batch_size]
-            texts = [t for _, t in batch]
+        for i in range(0, len(to_embed), chunk_size):
+            chunk = to_embed[i : i + chunk_size]
+            texts = [t for _, t in chunk]
             vecs = _embed_batch(texts, cfg)
-            for (pid, _), vec in zip(batch, vecs):
+            for (pid, _), vec in zip(chunk, vecs):
                 blob = _pack(vec)
                 conn.execute(
-                    "INSERT OR REPLACE INTO paper_vectors "
-                    "(paper_id, embedding) VALUES (?, ?)",
+                    "INSERT OR REPLACE INTO paper_vectors (paper_id, embedding) VALUES (?, ?)",
                     (pid, blob),
                 )
                 all_new_ids.append(pid)
                 all_new_vecs.append(vec)
-            total += len(batch)
-            if total % (batch_size * 10) == 0 or i + batch_size >= len(to_embed):
-                _log.info("Progress: %d/%d", total, len(to_embed))
+            total += len(chunk)
+            _log.info("Progress: %d/%d", total, len(to_embed))
 
         conn.commit()
     finally:
@@ -470,7 +548,8 @@ def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | Non
         _append_faiss_files(
             explore_dir / "faiss.index",
             explore_dir / "faiss_ids.json",
-            all_new_ids, all_new_vecs,
+            all_new_ids,
+            all_new_vecs,
         )
 
     # Also build FTS5 index (cheap, ensures keyword search is available)
@@ -502,10 +581,14 @@ def build_papers_map(name: str, cfg: Config | None = None) -> dict[str, dict]:
     return pm
 
 
-def build_explore_topics(name: str, *, rebuild: bool = False,
-                         min_topic_size: int = 30,
-                         nr_topics: int | str | None = None,
-                         cfg: Config | None = None) -> dict:
+def build_explore_topics(
+    name: str,
+    *,
+    rebuild: bool = False,
+    min_topic_size: int = 30,
+    nr_topics: int | str | None = None,
+    cfg: Config | None = None,
+) -> dict:
     """对探索库运行 BERTopic 主题建模。
 
     复用主库的 ``build_topics()`` 流程，但参数针对大规模数据调整
@@ -559,9 +642,7 @@ def build_explore_topics(name: str, *, rebuild: bool = False,
     n_topics = len(set(topics)) - (1 if -1 in topics else 0)
     n_outliers = sum(1 for t in topics if t == -1)
     info = {"n_topics": n_topics, "n_outliers": n_outliers, "n_papers": len(topics)}
-    (model_dir / "info.json").write_text(
-        json.dumps(info, indent=2) + "\n", encoding="utf-8"
-    )
+    (model_dir / "info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     return info
 
 
@@ -585,8 +666,7 @@ def _build_faiss_index(name: str, cfg: Config | None = None):
     )
 
 
-def explore_vsearch(name: str, query: str, *, top_k: int = 10,
-                    cfg: Config | None = None) -> list[dict]:
+def explore_vsearch(name: str, query: str, *, top_k: int = 10, cfg: Config | None = None) -> list[dict]:
     """在探索库中进行语义搜索（FAISS 加速）。
 
     Args:
@@ -639,8 +719,7 @@ def _ensure_fts(db_path: Path) -> None:
     conn.close()
 
 
-def build_explore_fts(name: str, *, rebuild: bool = False,
-                      cfg: Config | None = None) -> int:
+def build_explore_fts(name: str, *, rebuild: bool = False, cfg: Config | None = None) -> int:
     """为探索库构建 FTS5 全文索引。
 
     Args:
@@ -659,8 +738,7 @@ def build_explore_fts(name: str, *, rebuild: bool = False,
             conn.execute("DELETE FROM papers_fts")
             conn.commit()
 
-        existing = {row[0] for row in
-                    conn.execute("SELECT paper_id FROM papers_fts").fetchall()}
+        existing = {row[0] for row in conn.execute("SELECT paper_id FROM papers_fts").fetchall()}
 
         count = 0
         for p in iter_papers(name, cfg):
@@ -674,8 +752,7 @@ def build_explore_fts(name: str, *, rebuild: bool = False,
             authors = ", ".join(p.get("authors") or [])
             year = str(p.get("year") or "")
             conn.execute(
-                "INSERT INTO papers_fts (paper_id, title, authors, abstract, year) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO papers_fts (paper_id, title, authors, abstract, year) VALUES (?, ?, ?, ?, ?)",
                 (pid, title, authors, abstract, year),
             )
             count += 1
@@ -688,8 +765,7 @@ def build_explore_fts(name: str, *, rebuild: bool = False,
     return count
 
 
-def explore_search(name: str, query: str, *, top_k: int = 20,
-                   cfg: Config | None = None) -> list[dict]:
+def explore_search(name: str, query: str, *, top_k: int = 20, cfg: Config | None = None) -> list[dict]:
     """在探索库中进行 FTS5 关键词搜索。
 
     Args:
@@ -720,17 +796,15 @@ def explore_search(name: str, query: str, *, top_k: int = 20,
     conn = sqlite3.connect(db)
     try:
         rows = conn.execute(
-            "SELECT paper_id, rank FROM papers_fts WHERE papers_fts MATCH ? "
-            "ORDER BY rank LIMIT ?",
+            "SELECT paper_id, rank FROM papers_fts WHERE papers_fts MATCH ? ORDER BY rank LIMIT ?",
             (query, top_k),
         ).fetchall()
     except Exception:
         # FTS query syntax error — try quoting
-        safe_query = '"' + query.replace('"', '') + '"'
+        safe_query = '"' + query.replace('"', "") + '"'
         try:
             rows = conn.execute(
-                "SELECT paper_id, rank FROM papers_fts WHERE papers_fts MATCH ? "
-                "ORDER BY rank LIMIT ?",
+                "SELECT paper_id, rank FROM papers_fts WHERE papers_fts MATCH ? ORDER BY rank LIMIT ?",
                 (safe_query, top_k),
             ).fetchall()
         except Exception:
@@ -749,8 +823,7 @@ def explore_search(name: str, query: str, *, top_k: int = 20,
     return results
 
 
-def explore_unified_search(name: str, query: str, *, top_k: int = 20,
-                           cfg: Config | None = None) -> list[dict]:
+def explore_unified_search(name: str, query: str, *, top_k: int = 20, cfg: Config | None = None) -> list[dict]:
     """探索库融合检索：FTS5 关键词 + FAISS 语义，RRF 合并排序。
 
     Args:
@@ -803,7 +876,4 @@ def list_explore_libs(cfg: Config | None = None) -> list[str]:
         root = _DEFAULT_EXPLORE_DIR
     if not root.exists():
         return []
-    return sorted(d.name for d in root.iterdir()
-                  if d.is_dir() and (d / "papers.jsonl").exists())
-
-
+    return sorted(d.name for d in root.iterdir() if d.is_dir() and (d / "papers.jsonl").exists())

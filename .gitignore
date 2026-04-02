@@ -12,12 +12,14 @@ dist/
 build/
 .venv/
 .env
-.vscode/
+.ruff_cache/
+.mypy_cache/
 
 # Tests & IDE
-tests/
 .pytest_cache/
 .vscode/
+.coverage
+.coverage.*
 
 # SQLite temp files
 *.db-journal
@@ -38,6 +40,8 @@ config.yaml
 
 # Developer docs (not published)
 docs-dev/
+docs/issues.md
+.claude/worktrees/
 
 # Backups
 *.bak

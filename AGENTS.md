@@ -227,7 +227,7 @@ Default LLM backend: DeepSeek (`deepseek-chat`), OpenAI-compatible protocol.
 
 Skills are authored in `.github/skills/`, which preserves the existing Copilot layout. For cross-agent discovery, expose the same skill tree through `.agents/skills/` (Codex / OpenClaw) and `.claude/skills/` (Claude / Cline). All skills follow the [Agent Skills](https://agentskills.io) open standard, with one folder per skill and a `SKILL.md` file as the entry point.
 
-**Available skills (30):**
+**Available skills (35):**
 
 Project overview:
 - `autor-overview` — Project overview (how to use the software / what skills exist / what other features are available / what to do next)
@@ -252,6 +252,10 @@ Knowledge base management:
 - `import` — Endnote / Zotero import
 - `rename` — Paper file renaming
 - `audit` — Paper audit (rule checks + LLM deep diagnosis + repair)
+- `document` — Generate and inspect Office documents (DOCX, PPTX, XLSX)
+- `draw` — Generate diagrams and vector graphics for workspace outputs
+- `insights` — Analyze research behavior data and discover overlooked papers
+- `translate` — Translate paper markdown to a target language
 - `trials` — Clinical trial retrieval with workspace-attached outputs
 
 Academic writing:
@@ -261,6 +265,7 @@ Academic writing:
 - `paper-writing` — Paper section writing (Introduction / Related Work / Method / Results / Discussion)
 - `citation-check` — Citation verification (anti-AI hallucination, local library cross-check)
 - `polish` — Writing polish (remove AI/system artifacts, normalize terminology, style adaptation + EN/ZH)
+- `writing-polish` — Prose polishing focused on removing AI-generated patterns
 - `review-response` — Review response (point-by-point analysis + evidence search + rebuttal)
 - `research-gap` — Research gap identification (multi-dimensional analysis + open question discovery)
 - `check` — Final-draft structural and quality review before submission
@@ -283,7 +288,7 @@ When the project is not yet configured, use `autor setup` to guide the user:
 When operating from bash/WSL, prefer the repository scripts instead of ad-hoc service commands:
 
 1. Activate the project environment first:
-  - `cd /mnt/f/autor`
+  - `cd /mnt/f/AutoR`
   - `source .venv/bin/activate`
 2. Start long-running local services with `scripts/start.sh`:
   - Starts local MinerU on `127.0.0.1:8000`
