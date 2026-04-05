@@ -12,7 +12,7 @@ Before formally starting a literature review, first revise the structure, classi
 The focus of this skill is not to write the main text directly, but to answer four prerequisite questions:
 
 1. Is the section/subheading structure provided by the user reasonable? Which parts need to be revised based on reasoning and evidence?
-2. Which section should each paper in the current workspace go into? Which papers are core evidence, and which are only supplementary?
+2. Which section should each paper in the current workspace go into? Which papers are core evidence, which are supplementary, and which review articles should be retained as framing anchors?
 3. What tables should be designed for the review? What should each table compare, how should it compare it, and which papers should go into it?
 4. Before formal writing begins, what scope, evidence, and structural issues still need to be filled in?
 
@@ -22,6 +22,8 @@ The focus of this skill is not to write the main text directly, but to answer fo
 - Ideally, the user should also provide an **initial heading structure**. If they do not yet have one, first propose a candidate structure based on the papers in the workspace, then move into the revision workflow.
 - Write outputs into the `workspace/<name>/` directory.
 - By default, treat the **Springer Nature Reviews style** as the preferred reference framework; if the user later wants to target another journal, you can make a second round of adjustments on top of this baseline.
+- Treat the local knowledge base / total library as **reference-only**. It is useful for local orientation, but it is not sufficient to prove that the literature is complete for a field or subtopic.
+- When judging whether the literature is complete enough, rely on **AutoDownload-mediated external database retrieval and metadata**, not only on what already exists in the local library.
 
 ## Execution logic
 
@@ -46,6 +48,8 @@ autor topics                             # topic clusters (if already modeled)
 autor show <dir_name> --level 2          # read abstracts paper by paper
 ```
 
+This initial local scan is for orientation only. If a heading appears thin, missing, or suspiciously one-sided, verify coverage against external databases through AutoDownload metadata retrieval rather than concluding from the local library alone.
+
 Evaluate each user-provided heading one by one. Do not change the structure based on intuition alone; you must explain the **evidence basis**:
 
 At the same time, use the common review-organizing logic of Springer Nature Reviews as the default framework for correcting the structure:
@@ -56,6 +60,7 @@ At the same time, use the common review-organizing logic of Springer Nature Revi
 - **Emphasize synthesis and critique within sections**: not “what paper A said, then what paper B said,” but organizing multiple studies into one argumentative unit
 - **Reserve space for tables and figures**: at the structure-design stage, already consider which sections need comparison tables, evidence-summary tables, or mechanism diagrams
 - **The ending should naturally lead into Outlook / Open questions**: the outline itself should leave a logical opening for later synthesis and future directions
+- **Keep a controlled review layer**: besides primary studies, retain a small number of field-defining, near-neighbor, and section-local authoritative reviews so the manuscript can acknowledge prior syntheses and orient the reader
 
 - Is there **enough literature** supporting this subheading? If it is backed by only 1–2 peripheral papers, it may need to be merged
 - Are the **boundaries clear** between subheadings? Is there serious overlap or repetitive narration
@@ -63,6 +68,7 @@ At the same time, use the common review-organizing logic of Springer Nature Revi
 - Does the order of the structure match the field’s usual logic: by problem, by method, by timeline, by controversy, or is it mixed together inconsistently
 - Does it omit key themes, key methods, or key populations/experimental systems that recur repeatedly in the workspace
 - Are there parts the user assumes are important, but for which the current evidence does not support a standalone section
+- If a section looks sparse, is that because the field is actually sparse, or because the local library has not yet been expanded through external-database retrieval
 
 For each subheading, choose one of the following actions:
 
@@ -93,11 +99,13 @@ autor show <dir_name> --level 4          # read the full text for core papers
 
 The goal of classification is not to discard papers as quickly as possible, but to build a high-coverage classification result for **all scanned literature in the workspace**. As long as a paper’s **conclusion, method, subject, data condition, controversy, or limitation** is relevant to a heading, it should, as much as possible, be assigned to at least one category.
 
+However, workspace coverage and total-library coverage are not the same thing. If an important section, controversy, or canonical paper seems absent, perform an external metadata check through AutoDownload before deciding that the field truly lacks evidence.
+
 When classifying, do not simply “slot papers under headings”; instead, build an **evidence classification matrix**. At minimum, it is recommended to record the following fields:
 
 - `primary_section`: main assigned section
 - `related_sections`: all other relevant sections besides the primary assignment (can be multiple)
-- `study_type`: experimental study / computational study / clinical study / methods paper / review / data paper
+- `study_type`: experimental study / computational study / clinical study / methods paper / narrative review / systematic review / meta-analysis / guideline / data paper
 - `model_or_population`: object, sample, population, model system
 - `method_or_intervention`: core method, technical route, treatment condition
 - `dataset_or_condition`: data source, experimental scenario, boundary condition
@@ -107,6 +115,14 @@ When classifying, do not simply “slot papers under headings”; instead, build
 - `evidence_strength`: strong / medium / weak (judged comprehensively based on sample size, study design, reproducibility, and adequacy of comparisons)
 
 It is recommended to organize the classification output from a **section-centric perspective**, rather than forcing a deduplicated perspective in which “each paper appears only once.” When necessary, the same paper may **appear repeatedly** under multiple headings; do not sacrifice relevance merely for the sake of deduplication.
+
+Reviews require a separate judgment layer. Do not treat all reviews as expendable background. Distinguish at least these roles when relevant:
+
+- `field_anchor_review`: a broad, authoritative review from the parent field used to define the big question, historical positioning, or consensus baseline
+- `near_neighbor_review`: a review from the most relevant adjacent subfield used to clarify boundaries, overlap, or what this manuscript is and is not trying to cover
+- `section_anchor_review`: a section-local authoritative review used to acknowledge prior synthesis, stabilize terminology, or frame a controversy before moving into primary evidence
+
+Retain such reviews sparingly and label their role explicitly. They should help the manuscript position itself in the field, not replace primary evidence where direct claims depend on original studies.
 
 Pay special attention to the following cases during classification:
 
@@ -148,12 +164,41 @@ If the user **has not explicitly specified** any such constraint, Plan may decid
 
 Regardless of whether the user set limits, **every paper retained in the final set must be assigned to at least one body section and must be cited at least once in the subsequent formal draft**. In other words, the retained set is the minimum citation-coverage set for subsequent `/write`.
 
+By default, do **not** prune the writing corpus down to primary studies only. Unless the user explicitly requests otherwise, retain a controlled review layer:
+
+- `1-3` field-anchor reviews for the introduction or framing sections
+- `1-2` near-neighbor reviews for scope-setting, comparison, or boundary sections
+- `0-2` section-anchor reviews for each major section when they are clearly the most relevant and authoritative prior synthesis
+
+A retained review article should justify its place by doing at least one of the following:
+
+- defining the field-level problem or consensus baseline
+- marking a major shift in the field
+- clarifying the boundary between this review and nearby review traditions
+- summarizing a controversy that later sections will adjudicate with primary evidence
+- serving as an explicit acknowledgment of a major prior synthesis that readers in the field would reasonably expect to see cited
+
+If a review is retained, record both:
+
+- why it is being kept
+- what it is **not** allowed to substitute for in the later manuscript
+
+For example, a retained review may anchor the introduction, but it should not replace direct mechanistic or causal evidence when those claims depend on original studies.
+
+When a key paper is absent from the local library but clearly present in external-database retrieval, do not quietly proceed without it. Acquire it first through the AutoDownload pipeline when feasible, then classify it with the rest of the evidence.
+
 ### 4. Extract at least L3-level conclusion evidence by category
 
 Once classification is complete, do not jump immediately to writing or table construction. You should also build a directly reusable evidence layer for **every category / section**:
 
 - For every paper included in that category, extract at least **L3 (conclusion)**-level information
 - If L3 is missing, too short, or insufficient to support the category judgment, go back to L4 and supplement with relevant passages, but the output should still be organized as “conclusion evidence for this category”
+- If the paper is not in the local library, or if the existing local record has no usable L3 conclusion, obtain the paper through the AutoDownload download + processing workflow first whenever possible
+- If full-text processing still fails to yield a usable L3 layer, expose the full text to a dedicated reading subagent and require it to produce a structured note covering:
+  - what the article is mainly about
+  - what conclusions the article supports
+  - any quantitative results or boundary conditions that matter for the section
+  - any limitations that change how strongly the article should be used
 - Since the same paper may appear in multiple categories, its extracted conclusions may also appear repeatedly under multiple categories; when necessary, emphasize different relevant conclusions for different categories
 
 During extraction, it is recommended to record at least the following for each evidence item:
@@ -165,6 +210,8 @@ During extraction, it is recommended to record at least the following for each e
 - `quantitative_result`: if there is a quantifiable conclusion, extract it where possible
 - `limitation_or_boundary`
 - `table_reuse_hint`: which table this conclusion would fit into
+- `evidence_role`: direct evidence / framing review / consensus review / cautionary review
+- `evidence_origin`: extracted_l3 / direct_fulltext_read / subagent_fulltext_summary
 
 The purpose of this layer is that, when writing later, you do not need to return to the full text to figure out “what exactly does this paper support”; and when making tables later, you can also directly pull information from this category-organized conclusion layer.
 
@@ -257,11 +304,12 @@ Beyond the three core tasks above, the following items should usually also be co
 #### (d) Evidence-thin areas and reminders to add literature
 
 - Which subheadings currently lack sufficient evidence in the workspace
-- Which important controversies are missing key papers and require additional searching:
+- Which important controversies are missing key papers and require additional searching in external databases rather than only the local library:
   ```bash
   autor ws search <name> "<keyword>"
   autor usearch "<keyword>"
   ```
+- When completeness matters, record what was checked through AutoDownload metadata retrieval and what remains absent even after external search
 
 #### (e) Claim–evidence mapping
 
@@ -289,6 +337,8 @@ At the end of Plan, do not output only a loose outline. It is recommended to gen
 - `section-evidence.md`: evidence summaries organized by category / section; for every paper within each category, organize at least L3-level conclusions so they can be reused directly for later drafting and table construction
 - `table-plan.md`: design plans for at least 3 tables (purpose, fields, included papers, sorting rules)
 - `execution-tasks.md`: list **all follow-up writing and supplementary tasks** using a fixed structure
+
+When external completeness checking was needed, also record where that judgment came from: local reference only, AutoDownload metadata retrieval, or downloaded full-text evidence. Put this note in `review-plan.md` or `search-gaps.md`.
 
 If the workspace is large or the goal is a high-quality systematic review, you may additionally provide:
 
@@ -329,6 +379,8 @@ It is recommended that `review-plan.md` use the following structure consistently
    - target audience / target journal
    - language
    - structural style baseline (default: Springer Nature Reviews)
+   - retained review-layer policy
+   - external coverage-check status
 2. **Final outline (revised)**
    - provide the final chapter/subheading tree
    - mark changes relative to the user’s original outline
@@ -351,6 +403,7 @@ It is recommended that `paper-classification.md` contain at least the following 
      - which scan level has been completed (L2 / L3 / L4)
      - whether duplicate classification is allowed (default: yes)
      - classification coverage target (default: cover all scanned literature as much as possible)
+     - whether external-database completeness checking was performed
 2. **Retention / removal rules and statistics**
     - total number of papers evaluated
     - user-provided pruning constraints (if any)
@@ -364,13 +417,20 @@ It is recommended that `paper-classification.md` contain at least the following 
     - the same paper may appear repeatedly under multiple sections
     - each entry should at least explain why it is relevant to that section
     - for every retained paper, indicate at least which body section it will be cited in
-4. **Removed literature**
+4. **Retained review layer**
+    - field-anchor reviews
+    - near-neighbor reviews
+    - section-anchor reviews
+    - why each one is retained
+    - where each one will be cited
+    - what each one is not allowed to replace
+5. **Removed literature**
     - list removed papers one by one
     - explain the reason for removal
     - check whether the number removed complies with the user’s limit
-5. **Highly ambiguous literature**
+6. **Highly ambiguous literature**
     - record papers that can fit multiple headings but whose boundaries are not fully stable
-6. **Unclassified papers**
+7. **Unclassified papers**
     - retain here only papers that still cannot be assigned to any heading after completing L2 and escalating to L3/L4 as needed
     - explain for every unclassified paper why classification was abandoned
 
@@ -389,6 +449,8 @@ It is recommended that `section-evidence.md` be organized by **section / categor
    - `Quantitative result` (if any)
    - `Limitation / boundary`
    - `Potential table usage`
+   - `Evidence role`
+   - `Evidence origin`
 
 If the same paper appears repeatedly in multiple categories, it should be allowed to extract the conclusion most relevant to that category separately under each category, rather than keeping only one generic summary.
 
@@ -401,6 +463,7 @@ It is recommended that every section in `review-plan.md` be written using the fo
 - `Key question`: the core question this section is meant to answer
 - `Scope / boundary`: what is included and what is not
 - `Core papers`: the main evidence papers
+- `Anchor reviews / framing reviews`: the review articles kept on purpose for positioning, acknowledgment, or consensus framing
 - `Conflicting / cautionary papers`: conflicting evidence or papers that require cautious interpretation
 - `Planned tables / figures`: which tables/figures this section uses
 - `Expected takeaway`: what conclusion the reader should take away after finishing this section
@@ -442,9 +505,12 @@ At minimum, check the following:
    - Have the scanned papers in the workspace, as much as possible, all been assigned to at least one category
    - Are unclassified papers truly impossible to classify, with sufficient justification
    - Have multiply classified papers retained the necessary place under all relevant sections
+   - Has a deliberate review layer been retained, rather than accidentally pruning away all major prior syntheses
 3. **Evidence check**
    - Has every category accumulated at least L3-level conclusion evidence
    - Are the evidence entries sufficient to support later body writing and tables
+   - Are retained review articles labeled clearly as framing/consensus inputs rather than direct substitutes for primary evidence
+   - If L3 was unavailable, was the gap resolved through full-text reading or a full-text-reading subagent rather than left vague
 4. **Table check**
    - Have at least 3 tables been designed
    - Is every table tied to a clear section and a clear purpose
@@ -458,6 +524,9 @@ At minimum, check the following:
    - If the user provided a pruning limit, does the actual number removed stay within that limit
    - If the user did not provide a limit, have pruning statistics and reasons been explicitly recorded
    - Has every retained paper already been mapped to at least one body section and at least one follow-up citation task
+8. **Coverage-source check**
+   - Were completeness judgments made against external database retrieval rather than local-library density alone
+   - If a key paper was absent locally, was it fetched or at least explicitly logged as externally found but not yet processed
 
 Only after this review step passes should formal writing begin.
 
@@ -476,6 +545,7 @@ The advantages of this are:
 - The body draft is less likely to overturn the outline halfway through writing
 - Every section has a clear evidence pool
 - Every section already has at least an L3-level conclusion-evidence layer, so there is no need to re-search paper by paper while drafting
+- If L3 extraction originally failed, the planning layer has already resolved it through direct full-text reading or a subagent-produced full-text summary
 - Tables can be designed first, and the body can develop around tables and evidence instead of adding tables afterward
 - `/write` can treat `review-plan.md`, `section-evidence.md`, and `execution-tasks.md` as a writing contract rather than improvising freely again
 
@@ -484,6 +554,9 @@ The advantages of this are:
 - Structural revision must be **evidence-based**, not changed just because it “looks nicer”
 - Paper conclusions are the authors’ claims; when classifying and designing tables, pay attention to experimental conditions and limitations
 - A highly cited paper should not automatically be placed in the most central position
+- Authoritative review articles should not automatically displace primary evidence, but they should also not be stripped away reflexively if they are needed for framing, acknowledgment, or field positioning
+- The total library is a convenience layer, not a completeness guarantee; completeness claims must come from external-database retrieval and the downstream acquisition pipeline
+- If a critical paper has no usable L3 conclusion, do not hide behind missing structure; read the full text or assign the full text to a dedicated reading subagent
 - If a heading lacks evidence in the current workspace, explicitly tell the user to add literature rather than force the section into the draft
 
 ## Examples

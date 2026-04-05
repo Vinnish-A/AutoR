@@ -844,6 +844,7 @@ def _process_inbox(
     opts: dict[str, Any],
     dry_run: bool,
     ingested_jsons: list[Path],
+    successfully_ingested: list[dict[str, str]],
     *,
     is_thesis: bool = False,
     is_patent: bool = False,
@@ -861,6 +862,7 @@ def _process_inbox(
         opts: 运行选项。
         dry_run: 是否预览模式。
         ingested_jsons: 新入库的 JSON 路径列表（会被原地追加）。
+        successfully_ingested: Newly persisted papers collected for workspace add.
         is_thesis: 是否为 thesis inbox（跳过 DOI 去重，标记 paper_type）。
         is_patent: 是否为 patent inbox（跳过 DOI 去重，用公开号去重）。
         existing_pub_nums: 已入库专利公开号映射（用于去重）。
@@ -1040,6 +1042,10 @@ def _process_inbox(
         stats[final_status] += 1
         if final_status == "ingested" and ctx.ingested_json:
             ingested_jsons.append(ctx.ingested_json)
+            # Track only records that completed ingest and got a persisted UUID.
+            paper_uuid = str(getattr(ctx.meta, "id", "") or "")
+            if paper_uuid:
+                successfully_ingested.append({"id": paper_uuid, "dir_name": ctx.ingested_json.parent.name})
 
         if api_delay and idx < len(sorted_entries) - 1:
             time.sleep(api_delay)
@@ -1068,6 +1074,7 @@ def run_pipeline(
     step_names: list[str],
     cfg: Config,
     opts: dict[str, Any],
+    workspace: str | None = None,
 ) -> None:
     """执行指定步骤序列。
 
@@ -1093,6 +1100,7 @@ def run_pipeline(
             - ``rebuild`` (bool): 重建索引（index/embed）。
             - ``inbox_dir`` (Path): 自定义 inbox 目录。
             - ``papers_dir`` (Path): 自定义 papers 目录。
+        workspace: Optional workspace name that should receive newly ingested papers.
     """
     # Auto-inject translate step when config.translate.auto_translate is enabled.
     # Only inject when the pipeline includes inbox steps (i.e. new papers are being ingested),
@@ -1112,6 +1120,12 @@ def run_pipeline(
             _log.error("unknown step '%s'. available: %s", name, ", ".join(STEPS))
             sys.exit(1)
 
+    if workspace:
+        from autor import workspace as workspace_mod
+
+        if not workspace_mod.validate_workspace_name(workspace):
+            raise ValueError(f"非法工作区名称: {workspace}")
+
     inbox_dir: Path = opts.get("inbox_dir", cfg._root / "data/inbox")
     papers_dir: Path = opts.get("papers_dir", cfg.papers_dir)
     pending_dir: Path = cfg._root / "data" / "pending"
@@ -1122,6 +1136,7 @@ def run_pipeline(
 
     dry_run = opts.get("dry_run", False)
     ingested_jsons: list[Path] = []  # track newly ingested papers
+    successfully_ingested: list[dict[str, str]] = []
 
     # ---- Inbox scope ----
     if inbox_steps:
@@ -1138,6 +1153,7 @@ def run_pipeline(
             opts,
             dry_run,
             ingested_jsons,
+            successfully_ingested,
             is_thesis=False,
             existing_pub_nums=existing_pub_nums,
         )
@@ -1155,6 +1171,7 @@ def run_pipeline(
                 opts,
                 dry_run,
                 ingested_jsons,
+                successfully_ingested,
                 is_thesis=True,
                 existing_pub_nums=existing_pub_nums,
             )
@@ -1172,6 +1189,7 @@ def run_pipeline(
                 opts,
                 dry_run,
                 ingested_jsons,
+                successfully_ingested,
                 is_patent=True,
                 existing_pub_nums=existing_pub_nums,
             )
@@ -1191,6 +1209,7 @@ def run_pipeline(
                 opts,
                 dry_run,
                 ingested_jsons,
+                successfully_ingested,
                 is_thesis=False,
                 existing_pub_nums=existing_pub_nums,
             )
@@ -1302,6 +1321,15 @@ def run_pipeline(
         with timer(f"pipeline.global.{step_name}", "step") as t:
             STEPS[step_name].fn(papers_dir, cfg, opts)
         _log.debug("%s: %.1fs", step_name, t.elapsed)
+
+    if workspace and successfully_ingested:
+        from autor import workspace as workspace_mod
+
+        ws_dir = cfg._root / "workspace" / workspace
+        workspace_mod.create(ws_dir)
+        added = workspace_mod.add(ws_dir, [], cfg.index_db, resolved=successfully_ingested)
+        if added:
+            _log.info("已将 %d 篇论文添加到工作区: %s", len(added), workspace)
 
 
 def import_external(

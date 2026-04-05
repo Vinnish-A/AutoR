@@ -227,7 +227,7 @@ Default LLM backend: DeepSeek (`deepseek-chat`), OpenAI-compatible protocol.
 
 Skills are authored in `.github/skills/`, which preserves the existing Copilot layout. For cross-agent discovery, expose the same skill tree through `.agents/skills/` (Codex / OpenClaw) and `.claude/skills/` (Claude / Cline). All skills follow the [Agent Skills](https://agentskills.io) open standard, with one folder per skill and a `SKILL.md` file as the entry point.
 
-**Available skills (35):**
+**Available skills (36):**
 
 Project overview:
 - `autor-overview` — Project overview (how to use the software / what skills exist / what other features are available / what to do next)
@@ -263,6 +263,7 @@ Academic writing:
 - `write` — Formal review drafting after /plan using workspace-grounded evidence, humanized Springer Nature Reviews-style prose, and Markdown + CSL citations
 - `literature-review` — Literature review writing (workspace-based, topic grouping + critical narrative)
 - `paper-writing` — Paper section writing (Introduction / Related Work / Method / Results / Discussion)
+- `update` — Reviewer-driven manuscript revision with minimum-necessary, traceable edits and evidence-gated external supplementation
 - `citation-check` — Citation verification (anti-AI hallucination, local library cross-check)
 - `polish` — Writing polish (remove AI/system artifacts, normalize terminology, style adaptation + EN/ZH)
 - `writing-polish` — Prose polishing focused on removing AI-generated patterns

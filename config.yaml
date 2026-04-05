@@ -1,0 +1,99 @@
+# AutoR configuration 配置文件
+
+paths:
+  papers_dir: data/papers # Ingested papers directory 已入库论文目录
+  index_db: data/index.db # SQLite index file SQLite 索引文件
+
+# LLM backend LLM 后端配置
+# Put api_key in config.local.yaml (gitignored) or use env vars:
+# 敏感信息（api_key）放 config.local.yaml（不进 git），或用环境变量：
+#   AUTOR_LLM_API_KEY（通用）或按 backend 自动查找对应环境变量：
+#   openai-compat: DEEPSEEK_API_KEY / OPENAI_API_KEY
+#   anthropic:     ANTHROPIC_API_KEY
+#   google:        GOOGLE_API_KEY / GEMINI_API_KEY
+llm:
+  backend: openai-compat # openai-compat | anthropic | google
+  model: deepseek-chat
+  base_url: https://api.deepseek.com
+  api_key: null # → config.local.yaml
+  timeout: 30 # Normal LLM call timeout (sec) 普通调用超时（秒）
+  timeout_toc: 120 # enrich-toc timeout enrich-toc 超时
+  timeout_clean: 90 # validate_and_clean timeout 结论清洗超时
+  concurrency: 32 # Max concurrent LLM calls for enrich (toc/l3) enrich 并发数
+
+# --- Backend presets 后端预设示例 ---
+# DeepSeek (default 默认):
+#   backend: openai-compat
+#   model: deepseek-chat
+#   base_url: https://api.deepseek.com
+#
+# OpenAI:
+#   backend: openai-compat
+#   model: gpt-4o
+#   base_url: https://api.openai.com
+#
+# Anthropic Claude:
+#   backend: anthropic
+#   model: claude-sonnet-4-20250514
+#   base_url: https://api.anthropic.com
+#
+# Google Gemini:
+#   backend: google
+#   model: gemini-2.5-flash
+#   base_url: https://generativelanguage.googleapis.com
+#
+# Local Ollama:
+#   backend: openai-compat
+#   model: qwen2.5:14b
+#   base_url: http://localhost:11434
+
+# Ingest pipeline 数据入库管道
+ingest:
+  extractor: robust # auto | regex | llm | robust
+  mineru_endpoint: http://localhost:8000 # Local MinerU API 本地 MinerU API
+  mineru_cloud_url: https://mineru.net/api/v4 # Cloud MinerU API 云端 MinerU API
+  mineru_api_key: null # → config.local.yaml or env MINERU_API_KEY
+  mineru_backend_local: pipeline # local backend: pipeline | vlm-auto-engine | vlm-http-client | hybrid-auto-engine | hybrid-http-client
+  mineru_model_version_cloud: pipeline # cloud model_version: pipeline | vlm | MinerU-HTML
+  mineru_lang: ch # OCR language for local/cloud MinerU 本地/云端 OCR 语言
+  mineru_parse_method: auto # auto | txt | ocr
+  mineru_enable_formula: true # Enable formula parsing 是否启用公式解析
+  mineru_enable_table: true # Enable table parsing 是否启用表格解析
+  abstract_llm_mode: verify # off | fallback | verify
+  contact_email: null # Crossref polite pool email → config.local.yaml
+  s2_api_key: null # Semantic Scholar API key → config.local.yaml or env S2_API_KEY
+  mineru_batch_size: 20 # Cloud batch size per request 云端每批文件数上限
+  chunk_page_limit: 100 # Auto-split PDFs exceeding this page count 超长 PDF 自动切分页数阈值
+
+# Semantic embeddings 语义向量（主库默认做全文 chunking）
+embed:
+  model: Alibaba-NLP/gte-Qwen2-1.5B-instruct
+  cache_dir: ~/.cache/modelscope/hub/models
+  device: auto # auto | cpu | cuda
+  top_k: 10 # vsearch default results vsearch 默认返回条数
+  source: huggingface # huggingface (default) | modelscope (if the model is mirrored) 模型下载源
+  hf_endpoint: null # optional HuggingFace mirror endpoint (env AUTOR_HF_ENDPOINT > HF_ENDPOINT)
+
+search:
+  top_k: 20 # FTS5 search default results 关键词搜索默认返回条数
+
+# Logging & metrics 日志与指标
+logging:
+  level: INFO
+  file: data/autor.log
+  max_bytes: 10000000 # 10 MB, rotate on overflow 超出轮转
+  backup_count: 3
+  metrics_db: data/metrics.db
+
+# Topic modeling 主题建模
+topics:
+  min_topic_size: 5 # HDBSCAN min cluster size 最小聚类大小
+  nr_topics: -1 # 0=auto, -1=no merge, N=target count 目标主题数
+  model_dir: data/topic_model # Model save directory 模型保存目录
+
+# Translation 翻译
+translate:
+  auto_translate: false # Whether to auto-translate during pipeline ingest 入库时是否自动翻译
+  target_lang: zh # Default target language 默认目标语言
+  chunk_size: 4000 # Translation chunk size in characters 翻译分块大小（字符）
+  concurrency: 5 # Translation concurrency 翻译并发数

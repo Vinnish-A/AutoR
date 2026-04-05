@@ -17,7 +17,7 @@ fetch_journal(name, issn) → data/explore/<name>/papers.jsonl
 
 1. `_fetch_page()` — uses `primary_location.source.issn:{issn}` as the filter and pulls the OpenAlex `/works` endpoint page by page with cursors
 2. Writes JSONL output (`title`, `abstract`, `authors`, `year`, `doi`, `cited_by_count`, `type`)
-3. `build_explore_vectors()` — generates Qwen3 embeddings and stores them in the `paper_vectors` table in `explore.db`
+3. `build_explore_vectors()` — generates configured semantic embeddings and stores them in the `paper_vectors` table in `explore.db`
 4. `build_explore_topics()` — clusters papers with BERTopic (reusing `topics.py` via the `papers_map` parameter)
 5. `explore_vsearch()` — performs FAISS-based semantic search
 

@@ -36,6 +36,7 @@ Issues = "https://github.com/Vinnish-A/AutoR/issues"
 [project.optional-dependencies]
 embed = [
     "sentence-transformers>=3.0",
+    "transformers>=4.41.2,<4.42",
     "numpy>=1.24",
     "faiss-cpu>=1.7",
 ]

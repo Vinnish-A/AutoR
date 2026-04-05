@@ -221,7 +221,7 @@ def vsearch(
     paper_type: str | None = None,
     workspace: str | None = None,
 ) -> str:
-    """Semantic vector search using Qwen3-Embedding (FAISS cosine similarity).
+    """Semantic vector search using the configured embedding model (FAISS cosine similarity).
 
     Requires the [embed] dependency group: pip install autor[embed].
 
@@ -526,7 +526,7 @@ def build_index(rebuild: bool = False) -> str:
 def build_vectors(rebuild: bool = False) -> str:
     """Build or rebuild the FAISS semantic vector index.
 
-    Requires [embed] dependencies. First run downloads the Qwen3-Embedding model (~1.2GB).
+    Requires [embed] dependencies. First run downloads the configured embedding model.
 
     Args:
         rebuild: If True, regenerate all vectors. Otherwise incremental.

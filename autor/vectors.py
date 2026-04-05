@@ -2,8 +2,9 @@
 vectors.py — 向量嵌入与语义检索
 ==================================
 
-使用 Qwen3-Embedding-0.6B（本地 ModelScope 缓存）生成论文向量。
-嵌入文本 = title + abstract，存入 index.db 的 paper_vectors 表。
+主库默认使用全文 Markdown 分块（chunk）生成嵌入向量，存入
+``paper_chunks`` 表；同时保留按论文聚合后的 ``paper_vectors`` 兼容层，
+供主题建模等仍需要 paper-level 向量的模块复用。
 
 用法：
     from autor.vectors import build_vectors, vsearch
@@ -15,12 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import json
 import logging
 import os
 import sqlite3
 import struct
 import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,30 +34,70 @@ if TYPE_CHECKING:
 
     from autor.config import Config
 
+_DEFAULT_MODEL_NAME = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+_MAIN_VECTOR_PIPELINE = "paper-chunks-v1"
+_QUERY_TEMPLATE = (
+    "Instruction: Given a strictly clinical or biomedical query, "
+    "retrieve the corresponding evidence passage.\n"
+    "Query: {query}"
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS paper_vectors (
     paper_id     TEXT PRIMARY KEY,
     embedding    BLOB NOT NULL,
     content_hash TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS paper_chunks (
+    chunk_id      TEXT PRIMARY KEY,
+    paper_id      TEXT NOT NULL,
+    chunk_content TEXT NOT NULL,
+    embedding     BLOB NOT NULL,
+    content_hash  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper_id ON paper_chunks(paper_id);
+
+CREATE TABLE IF NOT EXISTS vector_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
-_MIGRATE_HASH = "ALTER TABLE paper_vectors ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+_MIGRATE_PAPER_VECTORS_HASH = "ALTER TABLE paper_vectors ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+_MIGRATE_PAPER_CHUNKS_HASH = "ALTER TABLE paper_chunks ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create paper_vectors table and migrate schema if needed."""
-    conn.execute(_SCHEMA)
-    # Migrate: add content_hash column if missing
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_vectors)")}
-    if "content_hash" not in cols:
-        conn.execute(_MIGRATE_HASH)
+    """Create vector tables and apply additive schema migrations."""
+    conn.executescript(_SCHEMA)
+    _ensure_column(conn, "paper_vectors", "content_hash", _MIGRATE_PAPER_VECTORS_HASH)
+    _ensure_column(conn, "paper_chunks", "content_hash", _MIGRATE_PAPER_CHUNKS_HASH)
 
 
-def _content_hash(title: str, abstract: str) -> str:
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(ddl)
+
+
+def _content_hash(*parts: str) -> str:
     """Compute a short hash of the embedding source text."""
-    text = f"{title}\n\n{abstract}"
+    text = "\n\n".join(part for part in parts if part)
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _get_meta(conn: sqlite3.Connection, key: str) -> str:
+    row = conn.execute("SELECT value FROM vector_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else ""
+
+
+def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO vector_meta (key, value) VALUES (?, ?)",
+        (key, value),
+    )
 
 
 # ============================================================================
@@ -76,7 +119,7 @@ def _load_model(cfg: Config | None = None):
         source = cfg.embed.source
         hf_endpoint = cfg.embed.hf_endpoint
     else:
-        model_name = "Qwen/Qwen3-Embedding-0.6B"
+        model_name = _DEFAULT_MODEL_NAME
         cache_dir = os.path.expanduser("~/.cache/modelscope/hub/models")
         device_cfg = "auto"
         source = "modelscope"
@@ -104,14 +147,20 @@ def _load_model(cfg: Config | None = None):
     if cache_key in _model_cache:
         return _model_cache[cache_key]
 
+    load_kwargs = {"device": device, "trust_remote_code": _should_trust_remote_code(model_name)}
+    if str(device).startswith("cuda"):
+        load_kwargs["model_kwargs"] = _cuda_model_kwargs(model_name)
+
     # Try to find or download the model
     local_path = _resolve_model_path(model_name, cache_dir, source)
-    if local_path:
-        model = SentenceTransformer(local_path, device=device)
-    else:
-        # HuggingFace fallback: SentenceTransformer handles download internally
-        _log.info("[embed] downloading model %s from HuggingFace", model_name)
-        model = SentenceTransformer(model_name, device=device)
+    patch_context = _patch_sentence_transformers_autoconfig(model_name) if load_kwargs["trust_remote_code"] else nullcontext()
+    with patch_context:
+        if local_path:
+            model = SentenceTransformer(local_path, **load_kwargs)
+        else:
+            # HuggingFace fallback: SentenceTransformer handles download internally
+            _log.info("[embed] downloading model %s from HuggingFace", model_name)
+            model = SentenceTransformer(model_name, **load_kwargs)
 
     _model_cache[cache_key] = model
     return model
@@ -121,7 +170,7 @@ def _resolve_model_path(model_name: str, cache_dir: str, source: str) -> str | N
     """Find local model path or download via ModelScope.
 
     Args:
-        model_name: Model ID (e.g. ``"Qwen/Qwen3-Embedding-0.6B"``).
+        model_name: Model ID (e.g. ``"Alibaba-NLP/gte-Qwen2-1.5B-instruct"``).
         cache_dir: Local cache directory.
         source: ``"modelscope"`` or ``"huggingface"``.
 
@@ -153,11 +202,101 @@ def _resolve_model_path(model_name: str, cache_dir: str, source: str) -> str | N
     return None
 
 
+def _needs_qwen_config_patch(model_name: str) -> bool:
+    return "qwen" in model_name.lower()
+
+
+def _should_trust_remote_code(model_name: str) -> bool:
+    return not _needs_qwen_config_patch(model_name)
+
+
+def _cuda_model_kwargs(model_name: str) -> dict[str, object]:
+    if not _needs_qwen_config_patch(model_name):
+        return {"torch_dtype": "auto"}
+
+    import torch
+
+    return {"torch_dtype": torch.float16}
+
+
+def _install_qwen_tokenizer_shims() -> None:
+    module_name = "transformers.models.qwen2.tokenization_qwen2_fast"
+    if importlib.util.find_spec(module_name) is not None:
+        return
+
+    import sys
+    import types
+
+    from transformers.models.qwen2 import Qwen2Tokenizer
+
+    shim = types.ModuleType(module_name)
+
+    class Qwen2TokenizerFast(Qwen2Tokenizer):
+        pass
+
+    shim.Qwen2TokenizerFast = Qwen2TokenizerFast
+    shim.__all__ = ["Qwen2TokenizerFast"]
+    sys.modules[module_name] = shim
+
+
+def _patch_hf_config(model_ref: str, config):
+    if hasattr(config, "rope_theta"):
+        return config
+
+    try:
+        config_path = Path(model_ref) / "config.json"
+        if not config_path.exists():
+            from transformers.utils.hub import cached_file
+
+            resolved = cached_file(model_ref, "config.json")
+            config_path = Path(resolved)
+        raw = json.loads(config_path.read_text("utf-8"))
+    except Exception as e:
+        _log.debug("failed to recover raw config for %s: %s", model_ref, e)
+        return config
+
+    if "rope_theta" in raw:
+        config.rope_theta = raw["rope_theta"]
+    return config
+
+
+def _load_hf_config(model_ref: str):
+    """Load a transformers config and restore fields dropped by newer APIs."""
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(model_ref, trust_remote_code=True)
+    return _patch_hf_config(model_ref, config)
+
+
+@contextmanager
+def _patch_sentence_transformers_autoconfig(model_name: str):
+    if not _needs_qwen_config_patch(model_name):
+        yield
+        return
+
+    _install_qwen_tokenizer_shims()
+    from sentence_transformers.models import Transformer as STTransformer
+
+    auto_config = STTransformer._load_config.__globals__["AutoConfig"]
+    original_from_pretrained = auto_config.__dict__["from_pretrained"]
+
+    def _patched_from_pretrained(cls, model_name_or_path: str, *args, **kwargs):
+        config = original_from_pretrained.__get__(None, cls)(model_name_or_path, *args, **kwargs)
+        return _patch_hf_config(model_name_or_path, config)
+
+    auto_config.from_pretrained = classmethod(_patched_from_pretrained)
+    try:
+        yield
+    finally:
+        auto_config.from_pretrained = original_from_pretrained
+
+
 # ============================================================================
 #  GPU profiling & adaptive batching
 # ============================================================================
 
 _GPU_PROFILE_FILE = Path("~/.cache/autor/gpu_profile.json").expanduser()
+_PROFILE_MAX_TOKENS = 4096
 
 
 def _profile_cache_key(model_name: str, gpu_name: str) -> str:
@@ -201,7 +340,7 @@ def _run_profile(model, cfg: Config | None = None) -> dict:
     model.encode([tiny], normalize_embeddings=True, batch_size=1)
     baseline = torch.cuda.memory_allocated(device)
 
-    model_name = cfg.embed.model if cfg is not None else "Qwen/Qwen3-Embedding-0.6B"
+    model_name = cfg.embed.model if cfg is not None else _DEFAULT_MODEL_NAME
 
     _log.info(
         "[gpu-profile] Profiling GPU memory for %s on %s (baseline=%.0f MB, total=%.0f MB) ...",
@@ -211,9 +350,11 @@ def _run_profile(model, cfg: Config | None = None) -> dict:
         gpu_total / 1024**2,
     )
 
-    # Probe from 64 tokens, doubling each time, until OOM
+    # Chunked retrieval usually stays far below the model's full context window,
+    # and _estimate_mem_per_sample() already extrapolates beyond the profiled range.
+    # Capping the probe keeps first-run profiling practical on 8 GB GPUs.
     tgt_tokens = 64
-    max_tokens = getattr(model, "max_seq_length", 32768) or 32768
+    max_tokens = min(getattr(model, "max_seq_length", 32768) or 32768, _PROFILE_MAX_TOKENS)
     while tgt_tokens <= max_tokens:
         raw = filler * (tgt_tokens // 4 + 10)
         ids = tokenizer.encode(raw)[:tgt_tokens]
@@ -262,7 +403,7 @@ def _load_or_create_profile(model, cfg: Config | None = None) -> dict:
         return {}
 
     gpu_name = torch.cuda.get_device_properties(device).name
-    model_name = cfg.embed.model if cfg is not None else "Qwen/Qwen3-Embedding-0.6B"
+    model_name = cfg.embed.model if cfg is not None else _DEFAULT_MODEL_NAME
     cache_key = _profile_cache_key(model_name, gpu_name)
 
     # Try loading from disk
@@ -351,8 +492,18 @@ def _compute_batch_size(est_tokens: int, profile: dict, safety_factor: float = 0
 
 def _embed_text(text: str, cfg: Config | None = None) -> list[float]:
     model = _load_model(cfg)
-    vec = model.encode([text], prompt_name="query", normalize_embeddings=True)
+    vec = model.encode([text], normalize_embeddings=True)
     return vec[0].tolist()
+
+
+def _embed_query(query: str, cfg: Config | None = None) -> list[float]:
+    return _embed_text(_QUERY_TEMPLATE.format(query=query.strip()), cfg)
+
+
+def _estimate_token_count(text: str) -> int:
+    ascii_chars = sum(ord(ch) < 128 for ch in text)
+    non_ascii_chars = len(text) - ascii_chars
+    return max(1, ascii_chars // 4 + non_ascii_chars // 2)
 
 
 def _embed_batch(texts: list[str], cfg: Config | None = None) -> list[list[float]]:
@@ -372,13 +523,9 @@ def _embed_batch(texts: list[str], cfg: Config | None = None) -> list[list[float
         vecs = model.encode(texts, normalize_embeddings=True, batch_size=8, show_progress_bar=len(texts) > 100)
         return vecs.tolist()
 
-    # Estimate token count per text (~3.5 chars per token for mixed text)
-    tokenizer = model.tokenizer
-    # Fast estimation: use tokenizer on a sample, calibrate ratio
-    est_tokens = []
-    for t in texts:
-        # Approximate: tokenizer.encode is fast enough for length estimation
-        est_tokens.append(len(tokenizer.encode(t)))
+    # Estimate token count cheaply from text length; OOM retry below still
+    # protects us if a bucket ends up slightly too optimistic.
+    est_tokens = [_estimate_token_count(t) for t in texts]
 
     # Build indexed list and sort by token count
     indexed = sorted(enumerate(texts), key=lambda x: est_tokens[x[0]])
@@ -436,7 +583,7 @@ def _embed_batch(texts: list[str], cfg: Config | None = None) -> list[list[float
 
 
 class QwenEmbedder:
-    """BERTopic-compatible embedder wrapping Qwen3 via ``_embed_batch``.
+    """BERTopic-compatible embedder wrapping the configured retrieval model.
 
     BERTopic's KeyBERTInspired representation model requires an embedding
     backend that exposes ``embed_documents`` and ``embed_words`` methods.
@@ -538,43 +685,95 @@ def _append_faiss(db_path: Path, new_ids: list[str], new_vecs: list[list[float]]
     _append_faiss_files(idx_p, ids_p, new_ids, new_vecs)
 
 
+def _current_model_name(cfg: Config | None = None) -> str:
+    return cfg.embed.model if cfg is not None else _DEFAULT_MODEL_NAME
+
+
+def _reset_vector_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM paper_chunks")
+    conn.execute("DELETE FROM paper_vectors")
+
+
+def _should_reset_main_vectors(conn: sqlite3.Connection, cfg: Config | None = None) -> bool:
+    stored_pipeline = _get_meta(conn, "main_pipeline")
+    stored_model = _get_meta(conn, "main_model")
+    current_model = _current_model_name(cfg)
+
+    if stored_pipeline and stored_model:
+        return stored_pipeline != _MAIN_VECTOR_PIPELINE or stored_model != current_model
+
+    has_legacy_vectors = conn.execute("SELECT 1 FROM paper_vectors LIMIT 1").fetchone() is not None
+    has_chunks = conn.execute("SELECT 1 FROM paper_chunks LIMIT 1").fetchone() is not None
+    return has_legacy_vectors and not has_chunks
+
+
+def _write_main_vector_meta(conn: sqlite3.Connection, cfg: Config | None = None) -> None:
+    _set_meta(conn, "main_pipeline", _MAIN_VECTOR_PIPELINE)
+    _set_meta(conn, "main_model", _current_model_name(cfg))
+
+
+def _aggregate_paper_vector(chunk_vecs: list[list[float]]) -> list[float]:
+    if not chunk_vecs:
+        return []
+
+    length = len(chunk_vecs[0])
+    sums = [0.0] * length
+    for vec in chunk_vecs:
+        for idx, value in enumerate(vec):
+            sums[idx] += value
+
+    scale = 1.0 / len(chunk_vecs)
+    return [value * scale for value in sums]
+
+
 # ============================================================================
 #  Build
 # ============================================================================
 
 
 def build_vectors(papers_dir: Path, db_path: Path, rebuild: bool = False, cfg: Config | None = None) -> int:
-    """为论文生成语义嵌入向量并写入 ``paper_vectors`` 表。
-
-    嵌入文本 = ``title`` + ``abstract`` 拼接。
-    使用 Sentence Transformer 模型（默认 Qwen3-Embedding-0.6B）。
+    """为主库全文分块生成语义向量，并维护兼容的 paper-level 向量。
 
     Args:
-        papers_dir: 已入库论文目录，扫描其中的 ``*.json``。
+        papers_dir: 已入库论文目录。
         db_path: SQLite 数据库路径，不存在时自动创建。
         rebuild: 为 ``True`` 时清空旧向量后重建。
         cfg: 可选的 :class:`~autor.config.Config`，用于读取模型/设备配置。
 
     Returns:
-        本次新写入的向量数量。
+        本次新写入的 chunk 向量数量。
     """
+    from autor.loader import chunk_markdown_text, load_l4
+    from autor.papers import iter_paper_dirs, read_meta
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pipeline_reset = False
+    updated_ids: set[str] = set()
+    new_chunk_ids: list[str] = []
+    new_chunk_vecs: list[list[float]] = []
+    chunk_count = 0
+
     conn = sqlite3.connect(db_path)
     try:
         _ensure_schema(conn)
-
-        if rebuild:
-            conn.execute("DELETE FROM paper_vectors")
+        pipeline_reset = rebuild or _should_reset_main_vectors(conn, cfg)
+        if pipeline_reset:
+            _reset_vector_tables(conn)
+            conn.commit()
 
         # Build lookup of existing hashes for incremental check
         existing_hashes: dict[str, str] = {}
-        if not rebuild:
+        if not pipeline_reset:
             for row in conn.execute("SELECT paper_id, content_hash FROM paper_vectors").fetchall():
                 existing_hashes[row[0]] = row[1]
 
-        # Collect papers to embed
-        from autor.papers import iter_paper_dirs, read_meta
-
-        to_embed: list[tuple[str, str, str]] = []  # (paper_id, text, hash)
+        chunk_rows_buffer: list[tuple[str, str, str, bytes, str]] = []
+        paper_rows_buffer: list[tuple[str, bytes, str]] = []
+        chunk_flush_size = 4096
+        embed_batch_size = 1024
+        can_append_faiss = not pipeline_reset
+        processed_papers = 0
         for pdir in iter_paper_dirs(papers_dir):
             try:
                 meta = read_meta(pdir)
@@ -585,54 +784,93 @@ def build_vectors(papers_dir: Path, db_path: Path, rebuild: bool = False, cfg: C
 
             title = (meta.get("title") or "").strip()
             abstract = (meta.get("abstract") or "").strip()
-            if not title and not abstract:
+            md_path = pdir / "paper.md"
+            full_markdown = load_l4(md_path) if md_path.exists() else ""
+            body_source = full_markdown.strip() or abstract or title
+            if not title and not body_source:
                 continue
 
-            h = _content_hash(title, abstract)
-            if not rebuild and existing_hashes.get(paper_id) == h:
+            paper_hash = _content_hash(title, body_source)
+            if not pipeline_reset and existing_hashes.get(paper_id) == paper_hash:
                 continue  # content unchanged, skip
 
-            if not abstract:
-                _log.debug("no abstract, embedding title only: %s", paper_id)
+            chunks = chunk_markdown_text(body_source, title=title or pdir.name)
+            if not chunks:
+                continue
 
-            parts = [p for p in [title, abstract] if p]
-            text = "\n\n".join(parts)
-            to_embed.append((paper_id, text, h))
-
-        if not to_embed:
-            return 0
-
-        _log.info("embedding %d papers", len(to_embed))
-        texts = [t for _, t, _ in to_embed]
-        vecs = _embed_batch(texts, cfg)
-
-        new_ids = []
-        new_vecs_raw = []
-        updated_ids = set()
-        for (paper_id, _, h), vec in zip(to_embed, vecs):
-            is_update = paper_id in existing_hashes
-            conn.execute(
-                "INSERT OR REPLACE INTO paper_vectors (paper_id, embedding, content_hash) VALUES (?, ?, ?)",
-                (paper_id, _pack(vec), h),
-            )
-            new_ids.append(paper_id)
-            new_vecs_raw.append(vec)
-            if is_update:
+            if paper_id in existing_hashes:
                 updated_ids.add(paper_id)
+                if can_append_faiss:
+                    new_chunk_ids.clear()
+                    new_chunk_vecs.clear()
+                    can_append_faiss = False
 
+            conn.execute("DELETE FROM paper_chunks WHERE paper_id = ?", (paper_id,))
+
+            chunk_texts = [chunk.content for chunk in chunks]
+            paper_sums: list[float] | None = None
+            paper_chunk_count = 0
+            for start in range(0, len(chunk_texts), embed_batch_size):
+                batch_texts = chunk_texts[start : start + embed_batch_size]
+                vecs = _embed_batch(batch_texts, cfg)
+                for offset, (chunk_text, vec) in enumerate(zip(batch_texts, vecs), start=start + 1):
+                    chunk_id = f"{paper_id}#{offset:04d}"
+                    chunk_rows_buffer.append((chunk_id, paper_id, chunk_text, _pack(vec), paper_hash))
+                    if paper_sums is None:
+                        paper_sums = list(vec)
+                    else:
+                        for idx, value in enumerate(vec):
+                            paper_sums[idx] += value
+                    paper_chunk_count += 1
+                    if can_append_faiss:
+                        new_chunk_ids.append(chunk_id)
+                        new_chunk_vecs.append(vec)
+                    chunk_count += 1
+
+                if len(chunk_rows_buffer) >= chunk_flush_size:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO paper_chunks
+                            (chunk_id, paper_id, chunk_content, embedding, content_hash)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        chunk_rows_buffer,
+                    )
+                    chunk_rows_buffer.clear()
+                    conn.commit()
+
+            if paper_sums is not None and paper_chunk_count > 0:
+                paper_vec = [value / paper_chunk_count for value in paper_sums]
+                paper_rows_buffer.append((paper_id, _pack(paper_vec), paper_hash))
+                processed_papers += 1
+
+        if processed_papers:
+            _log.info("embedding %d chunks from %d papers", chunk_count, processed_papers)
+        if chunk_rows_buffer:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO paper_chunks
+                    (chunk_id, paper_id, chunk_content, embedding, content_hash)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                chunk_rows_buffer,
+            )
+        if paper_rows_buffer:
+            conn.executemany(
+                "INSERT OR REPLACE INTO paper_vectors (paper_id, embedding, content_hash) VALUES (?, ?, ?)",
+                paper_rows_buffer,
+            )
+        _write_main_vector_meta(conn, cfg)
         conn.commit()
     finally:
         conn.close()
 
-    if to_embed:
-        if updated_ids:
-            # Content changed for existing papers — must rebuild FAISS
-            _invalidate_faiss(db_path)
-        else:
-            # Pure additions — try incremental append
-            _append_faiss(db_path, new_ids, new_vecs_raw)
+    if pipeline_reset or updated_ids:
+        _invalidate_faiss(db_path)
+    elif new_chunk_ids:
+        _append_faiss(db_path, new_chunk_ids, new_chunk_vecs)
 
-    return len(to_embed)
+    return chunk_count
 
 
 # ============================================================================
@@ -645,17 +883,21 @@ def _build_faiss_from_db(
     index_path: Path,
     ids_path: Path,
     *,
+    table_name: str = "paper_vectors",
+    id_column: str = "paper_id",
     empty_msg: str = "向量索引为空，请先运行 `autor embed`",
 ) -> tuple[faiss.Index, list[str]]:
-    """Build or load a FAISS IndexFlatIP from a paper_vectors table.
+    """Build or load a FAISS IndexFlatIP from a vector table.
 
     Generic implementation that works with any SQLite DB containing a
-    ``paper_vectors`` table (main library or explore silo).
+    vector table with ``(<id_column>, embedding)`` columns.
 
     Args:
-        db_path: SQLite database with ``paper_vectors`` table.
+        db_path: SQLite database path.
         index_path: Path to cached ``faiss.index`` file.
         ids_path: Path to cached ``faiss_ids.json`` file.
+        table_name: Table containing embeddings.
+        id_column: Identifier column aligned with the FAISS rows.
         empty_msg: Error message when no vectors found.
 
     Returns:
@@ -674,7 +916,7 @@ def _build_faiss_from_db(
 
     conn = sqlite3.connect(db_path)
     try:
-        rows = conn.execute("SELECT paper_id, embedding FROM paper_vectors").fetchall()
+        rows = conn.execute(f"SELECT {id_column}, embedding FROM {table_name}").fetchall()
     finally:
         conn.close()
 
@@ -712,35 +954,88 @@ def _build_faiss_from_db(
     return index, paper_ids
 
 
-def _build_faiss_index(db_path: Path) -> tuple[faiss.Index, list[str]]:
-    """Build or load a FAISS IndexFlatIP for the main library."""
+def _build_paper_faiss_index(db_path: Path) -> tuple[faiss.Index, list[str]]:
+    """Build or load a FAISS IndexFlatIP over ``paper_vectors``."""
     idx_p, ids_p = _faiss_paths(db_path)
-    return _build_faiss_from_db(db_path, idx_p, ids_p)
+    return _build_faiss_from_db(db_path, idx_p, ids_p, table_name="paper_vectors", id_column="paper_id")
+
+
+def _build_chunk_faiss_index(db_path: Path) -> tuple[faiss.Index, list[str]]:
+    """Build or load a FAISS IndexFlatIP over ``paper_chunks``."""
+    idx_p, ids_p = _faiss_paths(db_path)
+    return _build_faiss_from_db(db_path, idx_p, ids_p, table_name="paper_chunks", id_column="chunk_id")
+
+
+def _load_paper_meta_maps(db_path: Path) -> tuple[dict[str, dict], dict[str, str]]:
+    conn = sqlite3.connect(db_path)
+    try:
+        has_fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers'").fetchone()
+        meta_map: dict[str, dict] = {}
+        if has_fts:
+            conn.row_factory = sqlite3.Row
+            for row in conn.execute(
+                "SELECT paper_id, title, authors, year, journal, citation_count, paper_type FROM papers"
+            ).fetchall():
+                meta_map[row["paper_id"]] = dict(row)
+
+        dir_map: dict[str, str] = {}
+        has_reg = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers_registry'").fetchone()
+        if has_reg:
+            for row in conn.execute("SELECT id, dir_name FROM papers_registry").fetchall():
+                dir_map[row[0]] = row[1]
+    finally:
+        conn.close()
+
+    return meta_map, dir_map
+
+
+def _load_chunk_map(db_path: Path, chunk_ids: list[str]) -> dict[str, dict]:
+    if not chunk_ids:
+        return {}
+
+    conn = sqlite3.connect(db_path)
+    try:
+        placeholders = ",".join("?" for _ in chunk_ids)
+        rows = conn.execute(
+            f"""
+            SELECT chunk_id, paper_id, chunk_content
+            FROM paper_chunks
+            WHERE chunk_id IN ({placeholders})
+            """,
+            chunk_ids,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        row[0]: {"paper_id": row[1], "chunk_content": row[2]}
+        for row in rows
+    }
 
 
 def _vsearch_faiss(
     query: str,
     index: faiss.Index,
-    paper_ids: list[str],
+    row_ids: list[str],
     top_k: int,
     cfg: Config | None = None,
 ) -> list[tuple[str, float]]:
-    """Run a FAISS similarity search, returning ``(paper_id, score)`` pairs.
+    """Run a FAISS similarity search, returning ``(row_id, score)`` pairs.
 
     Args:
         query: Natural-language query text.
         index: FAISS ``IndexFlatIP`` instance.
-        paper_ids: Paper ID list aligned with the index.
+        row_ids: Identifier list aligned with the index.
         top_k: Number of results to return.
         cfg: Optional config for embedding model.
 
     Returns:
-        List of ``(paper_id, score)`` sorted by descending similarity.
+        List of ``(row_id, score)`` sorted by descending similarity.
     """
     import faiss
     import numpy as np
 
-    q_vec = np.array([_embed_text(query, cfg)], dtype="float32")
+    q_vec = np.array([_embed_query(query, cfg)], dtype="float32")
     faiss.normalize_L2(q_vec)
 
     fetch_k = min(top_k, index.ntotal)
@@ -750,7 +1045,7 @@ def _vsearch_faiss(
     for score, idx in zip(scores[0], indices[0]):
         if idx < 0:
             continue
-        results.append((paper_ids[idx], float(score)))
+        results.append((row_ids[idx], float(score)))
     return results
 
 
@@ -767,12 +1062,13 @@ def vsearch(
 ) -> list[dict]:
     """语义向量检索，使用 FAISS 加速余弦相似度搜索。
 
-    将查询文本编码为向量，通过 FAISS IndexFlatIP 检索最相似的论文。
-    FAISS 索引在首次查询时自动构建并缓存到磁盘，向量变更后自动失效重建。
+    主路径使用 ``paper_chunks`` 做 evidence-level 检索，并按 ``paper_id``
+    进行 max-score 聚合，兼容外部仍然只消费 paper-level 结果的接口。
+    若数据库尚未升级到 chunk 流程，则自动回退到旧版 ``paper_vectors`` 检索。
 
     Args:
         query: 自然语言查询文本。
-        db_path: SQLite 数据库路径（需包含 ``paper_vectors`` 表）。
+        db_path: SQLite 数据库路径（需包含 ``paper_chunks`` 或 ``paper_vectors`` 表）。
         top_k: 最多返回条数，为 ``None`` 时从 ``cfg.embed.top_k`` 读取。
         cfg: 可选的 :class:`~autor.config.Config`，用于加载嵌入模型。
         year: 年份过滤（``"2023"`` / ``"2020-2024"`` / ``"2020-"``）。
@@ -785,11 +1081,8 @@ def vsearch(
         ``paper_id``, ``title``, ``authors``, ``year``, ``journal``, ``score``。
 
     Raises:
-        FileNotFoundError: 索引文件或 ``paper_vectors`` 表不存在。
+        FileNotFoundError: 索引文件或向量表不存在。
     """
-    import faiss
-    import numpy as np
-
     if top_k is None:
         top_k = cfg.embed.top_k if cfg is not None else 10
 
@@ -801,68 +1094,81 @@ def vsearch(
         has_vectors = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='paper_vectors'"
         ).fetchone()
-        if not has_vectors:
+        has_chunks = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='paper_chunks'"
+        ).fetchone()
+        chunk_mode = bool(has_chunks and conn.execute("SELECT 1 FROM paper_chunks LIMIT 1").fetchone())
+        if not has_vectors and not chunk_mode:
             raise FileNotFoundError("向量索引不存在，请先运行 `autor embed`")
     finally:
         conn.close()
 
-    index, faiss_ids = _build_faiss_index(db_path)
-
-    q_vec = np.array([_embed_text(query, cfg)], dtype="float32")
-    faiss.normalize_L2(q_vec)
-
-    # Fetch more candidates when post-filtering is needed
-    fetch_k = top_k * 5 if (year or journal or paper_type or paper_ids) else top_k
-    fetch_k = min(fetch_k, index.ntotal)
-    scores, indices = index.search(q_vec, fetch_k)
-
-    # Load metadata from FTS5 table
-    conn = sqlite3.connect(db_path)
-    try:
-        has_fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers'").fetchone()
-        meta_map: dict[str, dict] = {}
-        if has_fts:
-            conn.row_factory = sqlite3.Row
-            for row in conn.execute(
-                "SELECT paper_id, title, authors, year, journal, citation_count, paper_type FROM papers"
-            ).fetchall():
-                meta_map[row["paper_id"]] = dict(row)
-        # Load dir_name mapping
-        dir_map: dict[str, str] = {}
-        has_reg = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='papers_registry'"
-        ).fetchone()
-        if has_reg:
-            for row in conn.execute("SELECT id, dir_name FROM papers_registry").fetchall():
-                dir_map[row[0]] = row[1]
-    finally:
-        conn.close()
+    meta_map, dir_map = _load_paper_meta_maps(db_path)
 
     results = []
-    for score, idx in zip(scores[0], indices[0]):
-        if idx < 0:
-            continue
-        pid = faiss_ids[idx]
-        meta = meta_map.get(pid, {})
-        results.append(
-            {
-                "paper_id": pid,
-                "dir_name": dir_map.get(pid, ""),
-                "title": meta.get("title") or pid,
-                "authors": meta.get("authors") or "",
-                "year": meta.get("year") or "",
-                "journal": meta.get("journal") or "",
-                "citation_count": meta.get("citation_count") or "",
-                "paper_type": meta.get("paper_type") or "",
-                "score": float(score),
-            }
-        )
+    if chunk_mode:
+        index, faiss_ids = _build_chunk_faiss_index(db_path)
+        multiplier = 20 if (year or journal or paper_type or paper_ids) else 10
+        fetch_k = min(max(top_k * multiplier, top_k), index.ntotal)
+        chunk_hits = _vsearch_faiss(query, index, faiss_ids, fetch_k, cfg=cfg)
+        chunk_map = _load_chunk_map(db_path, [chunk_id for chunk_id, _score in chunk_hits])
+
+        aggregated: dict[str, dict] = {}
+        for chunk_id, score in chunk_hits:
+            chunk = chunk_map.get(chunk_id)
+            if chunk is None:
+                continue
+            pid = chunk["paper_id"]
+            best = aggregated.get(pid)
+            if best is None or score > best["score"]:
+                aggregated[pid] = {
+                    "score": float(score),
+                    "matched_chunk_id": chunk_id,
+                    "matched_chunk": chunk["chunk_content"],
+                }
+
+        for pid, hit in aggregated.items():
+            meta = meta_map.get(pid, {})
+            results.append(
+                {
+                    "paper_id": pid,
+                    "dir_name": dir_map.get(pid, ""),
+                    "title": meta.get("title") or pid,
+                    "authors": meta.get("authors") or "",
+                    "year": meta.get("year") or "",
+                    "journal": meta.get("journal") or "",
+                    "citation_count": meta.get("citation_count") or "",
+                    "paper_type": meta.get("paper_type") or "",
+                    "score": hit["score"],
+                    "matched_chunk_id": hit["matched_chunk_id"],
+                    "matched_chunk": hit["matched_chunk"],
+                }
+            )
+    else:
+        index, faiss_ids = _build_paper_faiss_index(db_path)
+        fetch_k = top_k * 5 if (year or journal or paper_type or paper_ids) else top_k
+        fetch_k = min(fetch_k, index.ntotal)
+        for pid, score in _vsearch_faiss(query, index, faiss_ids, fetch_k, cfg=cfg):
+            meta = meta_map.get(pid, {})
+            results.append(
+                {
+                    "paper_id": pid,
+                    "dir_name": dir_map.get(pid, ""),
+                    "title": meta.get("title") or pid,
+                    "authors": meta.get("authors") or "",
+                    "year": meta.get("year") or "",
+                    "journal": meta.get("journal") or "",
+                    "citation_count": meta.get("citation_count") or "",
+                    "paper_type": meta.get("paper_type") or "",
+                    "score": float(score),
+                }
+            )
 
     if paper_ids is not None:
         results = [r for r in results if r["paper_id"] in paper_ids]
     if year or journal or paper_type:
         results = _post_filter(results, year=year, journal=journal, paper_type=paper_type)
-
+    results.sort(key=lambda item: item["score"], reverse=True)
     return results[:top_k]
 
 

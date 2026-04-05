@@ -50,6 +50,6 @@ ingest:
 
 ```yaml
 embed:
-  source: modelscope  # default (China)
-  # source: huggingface  # for international users
+  source: huggingface  # default
+  # source: modelscope  # only if your target model is mirrored there
 ```

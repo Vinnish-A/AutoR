@@ -65,6 +65,7 @@ Summarize them by group. Start with the overview, then go deeper only if the use
 - `write`: pick up directly from `/plan` and draft the formal review text using workspace-grounded evidence, Markdown + CSL citations, and more natural prose
 - `literature-review`: write a literature review
 - `paper-writing`: draft individual paper sections
+- `update`: revise a manuscript under reviewer or editor comments with minimum-necessary, traceable edits and evidence-gated outside supplementation
 - `citation-check`: verify whether citations are real and accurate
 - `polish`: polish academic text, remove AI/workflow artifacts, normalize terminology, and adapt the style
 - `review-response`: draft reviewer responses
@@ -118,6 +119,7 @@ When the user asks a broad question, organize the answer in this order by defaul
 - The user wants to revise structure, classify papers, and design tables before writing a review: switch to `plan`
 - The user wants to formally draft the review text following `/plan`: switch to `write`
 - The user wants a more open-ended review or direct section drafting: switch to `literature-review` or `paper-writing`
+- The user wants reviewer-driven manuscript revision with minimum necessary changes: switch to `update`
 - The user wants to verify citations: switch to `citation-check`
 
 ## Boundary facts

@@ -36,7 +36,6 @@ autor-mcp.pid
 
 # Config with secrets
 config.local.yaml
-config.yaml
 
 # Developer docs (not published)
 docs-dev/

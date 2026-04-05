@@ -100,11 +100,11 @@ class EmbedConfig:
         hf_endpoint: HuggingFace 镜像地址（可选），用于无代理或私有镜像。
     """
 
-    model: str = "Qwen/Qwen3-Embedding-0.6B"
+    model: str = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
     cache_dir: str = "~/.cache/modelscope/hub/models"
     device: str = "auto"
     top_k: int = 10
-    source: str = "modelscope"
+    source: str = "huggingface"
     hf_endpoint: str = ""
 
 
@@ -500,11 +500,11 @@ def _build_config(data: dict, root: Path) -> Config:
     )
 
     embed_data = data.get("embed", {}) or {}
-    embed_source = os.environ.get("AUTOR_EMBED_SOURCE") or embed_data.get("source") or "modelscope"
+    embed_source = os.environ.get("AUTOR_EMBED_SOURCE") or embed_data.get("source") or "huggingface"
     embed_cache_dir = (
         os.environ.get("AUTOR_EMBED_CACHE_DIR") or embed_data.get("cache_dir") or "~/.cache/modelscope/hub/models"
     )
-    embed_model = os.environ.get("AUTOR_EMBED_MODEL") or embed_data.get("model") or "Qwen/Qwen3-Embedding-0.6B"
+    embed_model = os.environ.get("AUTOR_EMBED_MODEL") or embed_data.get("model") or "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
     hf_endpoint = (
         os.environ.get("AUTOR_HF_ENDPOINT") or embed_data.get("hf_endpoint") or os.environ.get("HF_ENDPOINT") or ""
     )

@@ -468,7 +468,7 @@ def count_papers(name: str, cfg: Config | None = None) -> int:
 def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | None = None) -> int:
     """为探索库生成语义向量。
 
-    复用主库的 Qwen3-Embedding 模型，向量存入探索库自己的
+    复用主库当前配置的嵌入模型，向量存入探索库自己的
     ``explore.db``。
 
     Args:
@@ -481,24 +481,42 @@ def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | Non
     """
     from autor.vectors import (
         _append_faiss_files,
+        _current_model_name,
         _embed_batch,
         _ensure_schema,
+        _get_meta,
         _load_model,
         _pack,
+        _set_meta,
     )
 
     _load_model(cfg)
 
     db = _db_path(name, cfg)
+    explore_dir = _explore_dir(name, cfg)
+    pipeline_version = "explore-abstract-v1"
+    model_name = _current_model_name(cfg)
+    pipeline_reset = False
     conn = sqlite3.connect(db)
     try:
         _ensure_schema(conn)
 
-        if rebuild:
+        stored_pipeline = _get_meta(conn, "explore_pipeline")
+        stored_model = _get_meta(conn, "explore_model")
+        pipeline_reset = rebuild or bool(
+            stored_pipeline and stored_model and (
+                stored_pipeline != pipeline_version or stored_model != model_name
+            )
+        )
+        if not stored_pipeline and not stored_model:
+            pipeline_reset = pipeline_reset or bool(conn.execute("SELECT 1 FROM paper_vectors LIMIT 1").fetchone())
+
+        if pipeline_reset:
             conn.execute("DELETE FROM paper_vectors")
+            conn.commit()
 
         existing = set()
-        if not rebuild:
+        if not pipeline_reset:
             existing = {row[0] for row in conn.execute("SELECT paper_id FROM paper_vectors").fetchall()}
 
         to_embed: list[tuple[str, str]] = []
@@ -516,6 +534,9 @@ def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | Non
             to_embed.append((pid, text))
 
         if not to_embed:
+            _set_meta(conn, "explore_pipeline", pipeline_version)
+            _set_meta(conn, "explore_model", model_name)
+            conn.commit()
             return 0
 
         _log.info("Embedding %d papers...", len(to_embed))
@@ -539,12 +560,16 @@ def build_explore_vectors(name: str, *, rebuild: bool = False, cfg: Config | Non
             total += len(chunk)
             _log.info("Progress: %d/%d", total, len(to_embed))
 
+        _set_meta(conn, "explore_pipeline", pipeline_version)
+        _set_meta(conn, "explore_model", model_name)
         conn.commit()
     finally:
         conn.close()
 
-    if all_new_ids:
-        explore_dir = _explore_dir(name, cfg)
+    if pipeline_reset:
+        (explore_dir / "faiss.index").unlink(missing_ok=True)
+        (explore_dir / "faiss_ids.json").unlink(missing_ok=True)
+    elif all_new_ids:
         _append_faiss_files(
             explore_dir / "faiss.index",
             explore_dir / "faiss_ids.json",

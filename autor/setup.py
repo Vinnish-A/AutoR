@@ -489,13 +489,13 @@ ingest:
   mineru_enable_table: true
   abstract_llm_mode: verify # off | fallback | verify
 
-# Semantic embeddings (Qwen3-Embedding-0.6B, ~1.2 GB, auto-downloaded)
+# Semantic embeddings (gte-Qwen2-1.5B-instruct, auto-downloaded)
 embed:
-  model: Qwen/Qwen3-Embedding-0.6B
+  model: Alibaba-NLP/gte-Qwen2-1.5B-instruct
   cache_dir: ~/.cache/modelscope/hub/models
   device: auto              # auto | cpu | cuda
   top_k: 10
-  source: modelscope        # modelscope | huggingface
+  source: huggingface       # huggingface | modelscope
   hf_endpoint: null         # optional HuggingFace mirror endpoint
 
 search:

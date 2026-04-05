@@ -1,25 +1,25 @@
 ---
 name: write
-description: Draft a fact-grounded review manuscript from the current workspace by strictly following the outputs of /plan, using humanized Springer Nature Reviews-style prose and DOCX-ready Markdown citations with CSL. Use this when the user wants the formal writing stage after planning.
+description: Draft a fact-grounded review manuscript from the current workspace by following the `/plan` outputs, using seeded section openings, restrained Nature Reviews-style control, and DOCX-ready Markdown citations with CSL. Use this after planning when the user wants the full draft.
 ---
 
-# Formal Writing Based on the Plan
+# Plan-Grounded Review Drafting
 
-This skill is the **formal writing stage** after `/plan`. It is not for revisiting the outline or redoing classification; it turns the structure, evidence layers, table plan, and task cards finalized in `/plan` into actual review prose.
+Use this skill after `/plan`. It turns a fixed outline and evidence base into manuscript prose. It is not for re-planning.
 
-This skill has five hard constraints:
+## Hard constraints
 
-1. **Fact-grounded**: use only papers, evidence files, and retrieval artifacts that already exist in the current workspace
-2. **Plan-grounded**: follow the structure and section tasks produced by `/plan` by default
-3. **De-AI style**: the prose should follow the Humanize / `humanizer` principles and avoid obvious AI writing patterns
-4. **Close to Springer Nature Reviews style**
-5. **Use a DOCX-ready Markdown + CSL citation workflow**
+1. **Fact-grounded**: use only papers and evidence that already exist in the current workspace
+2. **Plan-grounded**: follow the structure and section tasks produced by `/plan`
+3. **Style-guided, not style-copying**: absorb register and structure, not phrases
+4. **Seeded drafting**: vary argumentative entry points instead of writing every section from the same template
+5. **DOCX-ready citations**: use Markdown citations plus a real CSL file
 
-## Prerequisites
+## Required inputs
 
-The user must specify a **workspace** (`--ws NAME`).
+The user must specify a workspace (`--ws NAME`).
 
-Before drafting, you must check for and read the following `/plan` artifacts:
+Before drafting, read:
 
 - `workspace/<name>/review-plan.md`
 - `workspace/<name>/execution-tasks.md`
@@ -27,93 +27,89 @@ Before drafting, you must check for and read the following `/plan` artifacts:
 - `workspace/<name>/section-evidence.md`
 - `workspace/<name>/table-plan.md`
 
-If these files are missing, go back to `/plan` first. Do not skip planning and jump straight into drafting.
-
-## Where this skill fits
-
-- `/plan`: set the structure, classify papers, design tables, and consolidate evidence
-- `/write`: draft the formal review text from that fixed structure and evidence base
-- `/literature-review`: more open-ended, exploratory review writing; if the user has already completed `/plan` and wants the draft to follow it strictly, prefer `/write`
+If these files are missing, stop and run `/plan` first.
 
 ## Workflow
 
-### 1. Lock the fact boundary first
+### 0. Load plan files and style references
 
-Claims, comparisons, controversy judgments, and summaries in the main text should by default come only from **real material inside the current workspace**:
+Read the plan artifacts first.
+
+If the target style is **Nature Reviews** or **Springer Nature Reviews**, read these files before drafting:
+
+- `.github/skills/polish/example/originals.md`
+- `.github/skills/polish/example/excerpts.md`
+- `.github/skills/polish/example/strategies.md`
+
+Use them for:
+
+- editorial compression
+- paragraph rhythm
+- argument control
+- calibrated judgment
+- conclusion design
+
+Do not reuse:
+
+- claims
+- examples
+- terminology that does not belong to the workspace
+- phrasing
+- metaphors
+
+The point is to remember how the prose behaves, not what those papers say.
+
+### 1. Lock the evidence boundary
+
+Claims, comparisons, controversy judgments, and summary statements should come only from material inside the current workspace:
 
 - papers already in the workspace
-- evidence-organizing files produced by `/plan`
-- trial retrieval outputs under `workspace/<name>/trials/` (if present)
+- evidence files produced by `/plan`
+- trial outputs under `workspace/<name>/trials/` if present
 
-Do not cite papers outside the workspace just to patch a sentence, and do not fill factual gaps from common knowledge or model memory if those facts do not appear in the workspace.
+Do not patch factual gaps from model memory. If a claim is not supported in the workspace:
 
-If a claim lacks evidence in the current workspace:
+- go back to `/plan` or `/search`
+- or mark it as `[CITATION NEEDED IN WORKSPACE]`
 
-- go back to `/plan` or `/search` first
-- or explicitly mark it as `[CITATION NEEDED IN WORKSPACE]`
+Never invent citations.
 
-Never fabricate citations.
+### 2. Prepare citation assets first
 
-### 2. Follow the Plan structure strictly
-
-Treat `review-plan.md` as the default **writing contract**:
-
-- follow the final section order
-- let each section answer only its own `Key question`
-- draw the primary evidence for each section from the matching `Section Cards` and `section-evidence.md`
-- place tables according to `table-plan.md`
-- follow the writing priority and dependency order defined in `execution-tasks.md`
-- **every paper retained in the final Plan** inside `paper-classification.md` must appear at least once in the main text; papers explicitly removed by the Plan do not need to be mentioned
-
-There are only two valid reasons to deviate from the plan:
-
-1. the user explicitly asks to change the structure
-2. writing reveals a clear conflict between `/plan` and the evidence
-
-If deviation is required, go back to `/plan`, revise it, and only then continue. Do not silently rewrite the draft around the plan.
-
-### 3. Prepare the citation assets first: BibTeX + CSL + Markdown citations
-
-#### 3.1 Export workspace references
-
-First make sure the workspace has a BibTeX file:
+#### 2.1 Export workspace references
 
 ```bash
 autor ws export <name> -o workspace/<name>/references.bib
 ```
 
-#### 3.2 Determine the CSL file
+#### 2.2 Choose the CSL file
 
-Choose the CSL in this order:
+Use this order:
 
-1. prefer `workspace/<name>/style.csl`
-2. if that does not exist, look for any existing `*.csl` under `workspace/<name>/`
-3. if none exists, **automatically fetch the default CSL**
+1. `workspace/<name>/style.csl`
+2. any existing `*.csl` under `workspace/<name>/`
+3. fetch the default CSL: `nature.csl`
 
-Default CSL:
-
-- **`nature.csl`**
-- original source: `https://raw.githubusercontent.com/citation-style-language/styles/master/nature.csl`
-
-Why:
-
-- for Markdown/Pandoc workflows, `nature.csl` is the closest broadly usable style to the Springer Nature Reviews family
-
-Recommended save path:
+Recommended path:
 
 ```text
 workspace/<name>/csl/nature.csl
 ```
 
-#### 3.3 The main text must use DOCX-ready Markdown citations
+Source:
 
-Do not use fake plain-text citations such as `(Author, Year)`. Use Pandoc / citeproc-compatible Markdown citations instead, for example:
+- `https://raw.githubusercontent.com/citation-style-language/styles/master/nature.csl`
+
+#### 2.3 Use Markdown citations in the main text
+
+Do not use plain-text citation placeholders such as `(Author, Year)`.
+
+Use Pandoc / citeproc Markdown citations:
 
 - single citation: `[@smith2021]`
 - multiple citations: `[@smith2021; @wang2023]`
-- for narrative citations, write the author into the sentence and then attach the citation key
 
-Recommended YAML header for the main Markdown file:
+Recommended YAML header:
 
 ```yaml
 ---
@@ -124,94 +120,149 @@ reference-section-title: References
 ---
 ```
 
-This allows direct rendering to DOCX later, for example:
+### 3. Build a seed map before drafting
 
-```bash
-pandoc workspace/<name>/write.md -o workspace/<name>/write.docx
-```
+Do not begin by free-writing the introduction. First build **section seeds**.
 
-### 4. Write section by section from task cards
+A seed is not a title, theme, or conclusion. It is a precise argumentative entry point for a section.
 
-Do not free-write the whole review in one pass. By default, follow the task order in `execution-tasks.md`:
+Seed families:
 
-- write the core sections first
-- then the controversy and limitation sections
-- then the introduction, conclusion, and outlook
+| Seed family | Use when | Example move |
+| --- | --- | --- |
+| Misread -> correction | The field is commonly framed in a misleading way | "X is often treated as ..., but the evidence is tighter than that." |
+| Boundary tightening | The topic is broad and needs scope control | "This review is not about all forms of X; it is about the subset that changes Y." |
+| Pressure -> mechanism | A biological or clinical pressure organizes the section | "Cells at this stage do not face one problem but a specific pressure stack." |
+| Failure mode | The section works best when organized around what breaks first | "The second step becomes necessary only after a distinct failure mode appears." |
+| State switch | The section is about transition, not static classification | "The key change is not more X, but a shift from state A to state B." |
+| Paradigm shift | New data changed an older consensus | "The older view treated X as ..., but newer evidence ties it to ..." |
+| Decision point | Clinical or translational sections need choice logic | "The practical question is not whether to intervene, but when and on what basis." |
+| Evidence gap | The honest move is to define what can and cannot yet be claimed | "The field has a usable model here, but not yet a complete causal chain." |
 
-For each section, use this minimal workflow:
+Seed rules:
 
-1. Read the final retained-paper set from `paper-classification.md` and build a citation-coverage checklist mapping retained papers to target sections
-2. Read the matching `Section Card` in `review-plan.md`
-3. Read the L3 evidence for that section in `section-evidence.md`
-4. Check which tables from `table-plan.md` belong in this section
-5. Draft a fact-grounded paragraph skeleton
-6. Refine it for de-AI style and journal style
-7. Confirm that every citation key exists in `references.bib`
+1. A seed must be specific enough to generate a first paragraph
+2. A seed must arise from workspace evidence, not generic rhetoric
+3. A seed should open one problem, not the whole field
+4. A seed should not already contain the final verdict
+5. A seed should sound different from the seeds used in nearby sections
 
-### 5. Language style: close to Springer Nature Reviews
+For the **introduction**, each **major section opening**, and the **conclusion**, draft **2-4 seeds from different families** before choosing one.
 
-The goal is not to produce “something that sounds like an AI review,” but something closer to Springer Nature Reviews:
+Then:
 
-- establish the background quickly without generic scene-setting
-- keep each section **argument-driven**, not paper-by-paper
-- use natural paragraph transitions without piling up connectors
-- stay critical about controversies and limitations
-- keep the narrative rhythm tight and avoid mechanically symmetrical paragraphs
-- let the conclusion transition naturally into open questions / outlook
+1. select one primary seed
+2. keep one reserve seed only if needed
+3. note which opening moves are already used
 
-### 6. De-AI style: follow the Humanize / `humanizer` principles
+Do not generate three full section drafts by default. Generate several openings, choose one, then continue.
 
-When drafting, use Humanize / `humanizer` as the default style reference. At minimum, avoid:
+### 4. Draft section openings first
 
-- hollow openings such as “In recent years, X has attracted widespread attention”
-- template-like connector stacking such as repeated “Furthermore,” “It is worth noting that,” or “In summary”
-- metanarrative with no information gain, such as “This section will discuss ...”
-- inflated but vague praise such as “of great theoretical and practical significance”
-- overly uniform paragraph lengths that feel template-generated
-- the familiar three-part parallelism common in AI prose
+Before writing full sections, draft the opening paragraph for:
 
-Recommended practice:
+- the introduction
+- each major body section
+- the conclusion
 
-- write the facts clearly first, then humanize the prose
-- keep authorial judgment, but make the expression more natural and concrete
-- if the environment supports it, call `/humanizer` or `/writing-polish` on section drafts for the final de-AI pass
+This is where most sameness begins. Fix it here, not later.
+
+Good section openings usually do one of these:
+
+- define the real problem quickly
+- narrow the scope
+- install a mechanism or decision frame
+- mark a shift in evidence or state
+- expose a false equivalence in the literature
+
+Weak section openings usually do this:
+
+- generic scene-setting
+- "In recent years..." framing
+- paper listing
+- telling the reader what the section will do
+- repeating the same contrast formula used in the previous section
+
+### 5. Draft the body section by section
+
+By default, follow `execution-tasks.md`:
+
+- core mechanism sections first
+- controversy and limitation sections next
+- introduction and conclusion after the body is stable
+
+For each section:
+
+1. read the retained-paper set in `paper-classification.md`
+2. read the matching `Section Card` in `review-plan.md`
+3. read the relevant evidence in `section-evidence.md`
+4. check which tables from `table-plan.md` belong here
+5. choose the section seed
+6. write a short section thesis in 1-2 sentences
+7. build paragraphs from claim -> explanation/evidence -> implication/boundary
+8. confirm that every citation key exists in `references.bib`
+
+### 6. Keep the register controlled
+
+Aim for:
+
+- fast openings, then narrowing
+- explanation before display
+- logic-driven transitions
+- calm but definite judgment
+- operational definitions
+- conclusions that sharpen questions instead of dissolving into vague optimism
+
+Avoid:
+
+- generic background throat-clearing
+- paper-by-paper recitation
+- metanarrative such as "This section discusses..."
+- connector stacking
+- decorative balance with little selection
+- repeating the same seed family across every section
+- repeated "not X but Y" turns as a default sentence shape
+- relying on a later polish pass to fix weak structure
+
+Tables and figures should carry analytical load. Do not narrate document design in the main text.
 
 ### 7. Outputs
 
 Write the default outputs to `workspace/<name>/`:
 
-- `write.md`: the main Markdown manuscript
-- `references.bib`: exported workspace references
-- `csl/nature.csl` or another CSL specified by the current workspace
+- `write.md`
+- `references.bib`
+- `csl/nature.csl` or another CSL file already chosen by the workspace
 
-Optional add-ons:
+Optional outputs:
 
-- `write.docx`: if the user explicitly wants a rendered DOCX
-- `sections/<nn>-<slug>.md`: if the user wants each section saved separately
+- `write.docx` if the user explicitly wants a rendered DOCX
+- `sections/<nn>-<slug>.md` if the user wants each section saved separately
+- `seed-map.md` only if the user wants process artifacts or if the team is iterating on style
 
-### 8. Check the generated text
+### 8. Check before delivery
 
-After the draft is generated, you must perform an **explicit check** rather than stopping as soon as writing finishes.
+Do not stop when the draft is merely complete. Check at least:
 
-Before delivery, check at least the following:
+1. **Factual consistency**: every judgment can be traced to workspace evidence
+2. **Structural consistency**: the manuscript follows `review-plan.md`
+3. **Evidence use**: paragraphs actually use `section-evidence.md`, not generic filler
+4. **Citation coverage**: every retained paper appears at least once in the main text
+5. **Citation consistency**: every `[@key]` exists in `references.bib`
+6. **CSL consistency**: the YAML header points to a real CSL file
+7. **Opening diversity**: the introduction and major sections do not all begin with the same move
+8. **Paragraph control**: each paragraph solves one sub-problem and ends with a consequence, limit, or transition
+9. **Terminology control**: terms are stable, defined, and not inflated
+10. **Conclusion sharpness**: the ending closes the argument and names specific open questions
 
-1. **Factual consistency**: can every judgment be traced back to evidence inside the workspace?
-2. **Structural consistency**: does the text follow `review-plan.md` strictly?
-3. **Evidence consistency**: do the paragraphs genuinely use the L3 evidence in `section-evidence.md`?
-4. **Citation coverage**: does every paper retained in the final Plan inside `paper-classification.md` appear at least once as a `[@key]` citation?
-5. **Citation consistency**: can every `[@key]` be found in `references.bib`?
-6. **CSL consistency**: does the `csl:` entry in the YAML header point to a real file inside the workspace?
-7. **De-AI style**: does the text still contain boilerplate, mechanical transitions, or vague conclusions?
-8. **Journal-style consistency**: does the overall manuscript feel close to Springer Nature Reviews?
+If the problem is factual or structural, revise the draft. If the problem comes from the plan, revise `/plan` first.
 
-If the check reveals factual, structural, citation, or style problems, revise the text before handing it over; if the problem comes from `/plan` itself, revise `/plan` first.
+## Short examples
 
-## Examples
+User says: "`/plan` is finished. Draft the review and keep the citations ready for DOCX export."
 
-User says: "`/plan` is finished. Now help me formally write the review based on the facts in the current workspace, and make sure the Markdown citations can be converted directly to DOCX."
+-> Read the plan files, prepare `references.bib` and the CSL, build seeds for the introduction and section openings, then draft section by section.
 
-→ Enter `/write`: read the `/plan` artifacts, prepare `references.bib` + `nature.csl`, and draft section by section from the task cards
+User says: "Write this as a Nature Reviews-style review, but avoid formulaic prose."
 
-User says: "Turn this workspace into a review that feels close to Springer Nature Reviews, and make sure the language doesn't sound AI-generated."
-
-→ If `/plan` is already complete, go straight to `/write`; otherwise go to `/plan` first
+-> Read the exemplar files first, build multiple section seeds, choose distinct entry moves, and draft from those seeds rather than from one repeating template.

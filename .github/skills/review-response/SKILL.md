@@ -7,6 +7,8 @@ description: Draft point-by-point responses to peer review comments. Locates sup
 
 Draft point-by-point responses to reviewer comments, locating supporting evidence from workspace papers and the original manuscript.
 
+If the user needs the **manuscript itself** revised under reviewer comments, use `update` first. This skill is for the response letter and rebuttal package, not for controlling manuscript-side edit scope.
+
 ## Prerequisites
 
 The user provides:

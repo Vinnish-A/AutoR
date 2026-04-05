@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -145,6 +146,192 @@ def load_l4(md_path: Path, *, lang: str | None = None) -> str:
                 if translated.exists():
                     return translated.read_text(encoding="utf-8", errors="replace")
     return md_path.read_text(encoding="utf-8", errors="replace")
+
+
+# ============================================================================
+#  Markdown chunking
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class MarkdownChunk:
+    """A section-aware markdown chunk used for retrieval embeddings.
+
+    Attributes:
+        section: The logical section label for the chunk.
+        content: Prefixed chunk text that will be embedded and stored.
+    """
+
+    section: str
+    content: str
+
+
+def chunk_markdown_text(
+    markdown: str,
+    *,
+    title: str = "",
+    max_chars: int = 800,
+    overlap_chars: int = 100,
+) -> list[MarkdownChunk]:
+    """Split full-text markdown into section-aware overlapping chunks.
+
+    Splitting is driven first by level-2 headings (``##``). Each section is
+    then broken into paragraph-aware windows with a character overlap to avoid
+    sharp semantic cuts near chunk boundaries.
+
+    Args:
+        markdown: Full markdown text, typically from :func:`load_l4`.
+        title: Paper title used in the chunk prefix. When omitted, attempts to
+            infer it from the first level-1 heading.
+        max_chars: Maximum approximate body length per chunk.
+        overlap_chars: Desired overlap between adjacent chunks in the same
+            section.
+
+    Returns:
+        List of prefixed :class:`MarkdownChunk` objects.
+    """
+    text = markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    if overlap_chars < 0:
+        raise ValueError("overlap_chars must be non-negative")
+    if overlap_chars >= max_chars:
+        raise ValueError("overlap_chars must be smaller than max_chars")
+
+    resolved_title = title.strip() or _infer_markdown_title(text)
+    sections = _split_markdown_sections(text)
+    chunks: list[MarkdownChunk] = []
+
+    for section_title, section_text in sections:
+        section_body = section_text.strip()
+        if not section_body:
+            continue
+        bodies = _chunk_section_body(section_body, max_chars=max_chars, overlap_chars=overlap_chars)
+        for body in bodies:
+            prefix = f"Title: {resolved_title}\nSection: {section_title}\n"
+            chunks.append(MarkdownChunk(section=section_title, content=prefix + body))
+
+    return chunks
+
+
+def _infer_markdown_title(markdown: str) -> str:
+    m = re.search(r"(?m)^#\s+(.+?)\s*$", markdown)
+    if m:
+        return _normalize_chunk_text(m.group(1))
+    return "Untitled"
+
+
+def _split_markdown_sections(markdown: str) -> list[tuple[str, str]]:
+    lines = markdown.splitlines()
+    sections: list[tuple[str, str]] = []
+    current_title = "Document"
+    current_lines: list[str] = []
+    seen_content = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if not seen_content and not line.strip():
+            continue
+        if not seen_content and re.match(r"^#\s+", line):
+            seen_content = True
+            continue
+        seen_content = True
+
+        m = re.match(r"^##\s+(.+?)\s*$", line)
+        if m:
+            if current_lines:
+                sections.append((current_title, "\n".join(current_lines).strip()))
+            current_title = _normalize_chunk_text(m.group(1)) or "Document"
+            current_lines = []
+            continue
+        current_lines.append(line)
+
+    if current_lines:
+        sections.append((current_title, "\n".join(current_lines).strip()))
+    return sections or [("Document", markdown)]
+
+
+def _chunk_section_body(section_text: str, *, max_chars: int, overlap_chars: int) -> list[str]:
+    paragraphs = [_normalize_chunk_text(p) for p in re.split(r"\n\s*\n+", section_text) if p.strip()]
+    if not paragraphs:
+        return []
+
+    chunks: list[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        if len(paragraph) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_slice_with_overlap(paragraph, max_chars=max_chars, overlap_chars=overlap_chars))
+            continue
+
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        chunks.append(current)
+        overlap = _extract_overlap(current, overlap_chars)
+        current = f"{overlap}\n\n{paragraph}".strip() if overlap else paragraph
+        if len(current) > max_chars:
+            chunks.extend(_slice_with_overlap(current, max_chars=max_chars, overlap_chars=overlap_chars))
+            current = ""
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def _slice_with_overlap(text: str, *, max_chars: int, overlap_chars: int) -> list[str]:
+    pieces: list[str] = []
+    start = 0
+    n = len(text)
+
+    while start < n:
+        end = min(start + max_chars, n)
+        if end < n:
+            soft_end = _retreat_to_boundary(text, end, max(start + max_chars // 2, start + 1))
+            if soft_end > start:
+                end = soft_end
+
+        piece = text[start:end].strip()
+        if piece:
+            pieces.append(piece)
+        if end >= n:
+            break
+
+        next_start = max(0, end - overlap_chars)
+        if next_start <= start:
+            next_start = end
+        else:
+            next_start = _retreat_to_boundary(text, next_start, start + 1)
+        start = next_start
+
+    return pieces
+
+
+def _extract_overlap(text: str, overlap_chars: int) -> str:
+    if overlap_chars <= 0 or len(text) <= overlap_chars:
+        return text.strip()
+    start = len(text) - overlap_chars
+    start = _retreat_to_boundary(text, start, 0)
+    return text[start:].strip()
+
+
+def _retreat_to_boundary(text: str, pos: int, floor: int) -> int:
+    while pos > floor and not text[pos - 1].isspace():
+        pos -= 1
+    return pos
+
+
+def _normalize_chunk_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
 
 
 # ============================================================================

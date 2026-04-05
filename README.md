@@ -60,7 +60,7 @@ WSL will try to detect Windows PowerShell automatically. If your environment is 
 |  | Feature | Description |
 |--|---------|-------------|
 | **PDF Parsing** | Deep structural extraction | [MinerU](https://github.com/opendatalab/MinerU) → Markdown with figures and equations preserved. Supports journal articles, theses, technical reports, and other document types |
-| **Hybrid Retrieval** | Keywords + semantics | FTS5 + Qwen3 embeddings + FAISS → RRF rank fusion |
+| **Hybrid Retrieval** | Keywords + semantics | FTS5 + chunk-aware semantic embeddings + FAISS → RRF rank fusion |
 | **Topic Discovery** | Automatic clustering | BERTopic + 6 interactive HTML visualizations — works for both the main library and explore datasets |
 | **Literature Exploration** | Multi-dimensional discovery | OpenAlex 9-dimensional filtering (journal, concept, author, institution, keyword, source type, year, citation count, document type) → vectorization → clustering → search |
 | **Citation Graph** | References and influence | Forward/backward citations and shared-reference analysis |
@@ -71,7 +71,7 @@ WSL will try to detect Windows PowerShell automatically. If your environment is 
 | **Translation** | Read across languages | `autor translate` preserves formulas, code blocks, and images while translating Markdown papers |
 | **Office Documents** | Inspect and ingest DOCX/PPTX/XLSX | `autor document inspect` checks layout and content; Office files can also flow through the document inbox |
 | **Research Insights** | Learn from your own workflow | `autor insights` surfaces hot queries, frequently read papers, reading trends, and semantic neighbors |
-| **Academic Writing** | AI-assisted drafting | Literature reviews, paper sections, citation verification, reviewer responses, research-gap analysis — every citation remains traceable to your own library |
+| **Academic Writing** | AI-assisted drafting | Literature reviews, paper sections, reviewer-driven revision, citation verification, reviewer responses, and research-gap analysis — every citation remains traceable to your own library |
 | **MCP Server** | 31 tools | Works with Claude Desktop, Cursor, and other MCP clients |
 
 ## More Than Paper Management
@@ -122,6 +122,16 @@ PDF → MinerU → Structured Markdown (figures + LaTeX preserved)
       Your agent (CodeX / Cursor / CLI / MCP / ...)
 ```
 
+### Batch ingest straight into a workspace
+
+You can send a new ingest batch directly into a project workspace during the same pipeline run:
+
+```bash
+autor pipeline ingest --workspace my_research_project
+```
+
+The workspace is created automatically if needed. Only papers that are newly written to `data/papers/` in that run are added, so pending items without a DOI and duplicates stopped by deduplication are excluded automatically.
+
 ## Configuration
 
 Main config: `config.yaml` (tracked in git). Sensitive data: `config.local.yaml` (not tracked).
@@ -133,7 +143,7 @@ Main config: `config.yaml` (tracked in git). Sensitive data: `config.local.yaml`
 
 > **Both are optional.** Without an LLM key, autor falls back to regex-only extraction. Without a MinerU key, place `.md` files directly into `data/inbox/`.
 
-The embedding model (Qwen3-Embedding-0.6B, about 1.2 GB) downloads automatically the first time you use it. By default it pulls from ModelScope (convenient for users in mainland China); users elsewhere can set `embed.source: huggingface`.
+The default embedding model is `Alibaba-NLP/gte-Qwen2-1.5B-instruct`. On the main library, `autor embed` now reads full `paper.md`, chunks it with overlap, and stores chunk-level evidence vectors for retrieval. The default download source is Hugging Face; if this model is mirrored in your environment, you can switch `embed.source`.
 
 Full configuration reference → [`config.yaml`](config.yaml)
 
@@ -195,7 +205,7 @@ autor/          # Python package
   mcp_server.py      # MCP server (31 tools)
   ingest/            # PDF parsing + metadata pipeline
   index.py           # FTS5 full-text search
-  vectors.py         # Qwen3 semantic embeddings + FAISS
+  vectors.py         # Full-text chunk embeddings + FAISS retrieval
   topics.py          # BERTopic topic modeling
   loader.py          # L1-L4 layered loading
   explore.py         # OpenAlex literature exploration

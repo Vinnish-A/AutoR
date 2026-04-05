@@ -577,6 +577,7 @@ def cmd_enrich_toc(args: argparse.Namespace, cfg) -> None:
 
 
 def cmd_pipeline(args: argparse.Namespace, cfg) -> None:
+    from autor import workspace as workspace_mod
     from autor.ingest.pipeline import PRESETS, STEPS, run_pipeline
 
     if args.list_steps:
@@ -600,6 +601,10 @@ def cmd_pipeline(args: argparse.Namespace, cfg) -> None:
         _log.error("请指定一个预设名称或使用 --steps")
         sys.exit(1)
 
+    if args.workspace and not workspace_mod.validate_workspace_name(args.workspace):
+        ui(f"非法工作区名称: {args.workspace}")
+        return
+
     opts = {
         "dry_run": args.dry_run,
         "no_api": args.no_api,
@@ -613,7 +618,7 @@ def cmd_pipeline(args: argparse.Namespace, cfg) -> None:
     if args.papers:
         opts["papers_dir"] = Path(args.papers).resolve()
 
-    run_pipeline(step_names, cfg, opts)
+    run_pipeline(step_names, cfg, opts, workspace=args.workspace)
 
 
 def cmd_enrich_l3(args: argparse.Namespace, cfg) -> None:
@@ -2832,6 +2837,11 @@ def main() -> None:
     p_pipe.add_argument("--rebuild", action="store_true", help="重建索引（index 步骤）")
     p_pipe.add_argument("--inbox", help="inbox 目录（默认 data/inbox）")
     p_pipe.add_argument("--papers", help="papers 目录（默认配置值）")
+    p_pipe.add_argument(
+        "-w",
+        "--workspace",
+        help="将成功入库的论文自动添加到指定工作区（如果工作区不存在则自动创建）",
+    )
 
     # --- refetch ---
     p_refetch = sub.add_parser("refetch", help="重新查询 API 补全引用量等字段")

@@ -56,4 +56,4 @@ That guide separates:
 
 ## Embedding Model
 
-The embedding model (Qwen3-Embedding-0.6B, ~1.2 GB) downloads automatically on first use. For users outside China, set `embed.source: huggingface` in `config.yaml`.
+The default embedding model is `Alibaba-NLP/gte-Qwen2-1.5B-instruct`. On the main library, `autor embed` reads full `paper.md`, performs overlapping markdown chunking, and builds chunk-level retrieval vectors. The `autor[embed]` extra now pins `transformers>=4.41.2,<4.42` for compatibility with the model's remote Qwen2 code. For users outside China, set `embed.source: huggingface` in `config.yaml`.

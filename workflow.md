@@ -335,6 +335,18 @@ autor pipeline ingest
 autor pipeline full
 ```
 
+### 2.3.1 Batch Ingest Straight into a Workspace
+
+Previously, a large PDF batch had to be ingested first and then searched or filtered again before it could be gathered into a project workspace.
+
+Now you can attach a workspace name directly to the pipeline command and lock the newly ingested batch into that project box in one step:
+
+```bash
+autor pipeline ingest --workspace my_research_project
+```
+
+The workspace is created automatically when it does not exist. Only papers that actually receive a UUID and are written into `data/papers/` during the current run are added. Items diverted to pending because they lack a DOI, along with duplicates skipped by deduplication, are excluded automatically.
+
 ### 2.4 What Happens After Ingest Finishes?
 
 After processing, a paper or document is stored under:

@@ -18,7 +18,8 @@ Searches title, abstract, and conclusion using SQLite FTS5 full-text search.
 autor vsearch "methods for predicting flow separation"
 ```
 
-Uses Qwen3 embeddings + FAISS for meaning-based retrieval.
+Uses FAISS over the configured semantic embeddings. On the main library this is
+chunk-aware retrieval over full `paper.md`, aggregated back to paper-level hits.
 
 ### Unified Search (Fusion)
 

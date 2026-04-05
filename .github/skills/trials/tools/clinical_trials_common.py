@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -177,9 +178,9 @@ def contains_term(text: str, needle: str) -> bool:
 
 
 
-def unique_keep_order(values: Iterable[str]) -> List[str]:
+def unique_keep_order(values: Iterable[str]) -> list[str]:
     seen: set[str] = set()
-    output: List[str] = []
+    output: list[str] = []
     for value in values:
         item = normalize_spaces(value)
         if not item:
@@ -217,7 +218,7 @@ def canonicalize_intervention(value: str | None) -> str | None:
 
 
 
-def canonicalize_phase(value: str | None) -> Dict[str, Any]:
+def canonicalize_phase(value: str | None) -> dict[str, Any]:
     text = lower(value)
     if not text:
         return {"raw": None, "tokens": [], "api_expression": None}
@@ -284,11 +285,11 @@ def detect_condition_from_text(text: str | None) -> str | None:
 
 
 
-def detect_modifier_concepts(text: str | None) -> List[str]:
+def detect_modifier_concepts(text: str | None) -> list[str]:
     source = normalize_spaces(text)
     if not source:
         return []
-    hits: List[str] = []
+    hits: list[str] = []
     for canonical, aliases in MODIFIER_ALIASES.items():
         if any(contains_term(source, alias) for alias in aliases):
             hits.append(canonical)
@@ -296,8 +297,8 @@ def detect_modifier_concepts(text: str | None) -> List[str]:
 
 
 
-def build_modifier_search_terms(concepts: Sequence[str]) -> List[str]:
-    terms: List[str] = []
+def build_modifier_search_terms(concepts: Sequence[str]) -> list[str]:
+    terms: list[str] = []
     for concept in concepts:
         terms.extend(MODIFIER_SEARCH_EXPANSIONS.get(concept, [concept]))
     return unique_keep_order(terms)
@@ -318,7 +319,7 @@ def build_query_label(search_input: SearchInput) -> str:
 
 
 
-def normalize_query(search_input: SearchInput) -> Dict[str, Any]:
+def normalize_query(search_input: SearchInput) -> dict[str, Any]:
     theme = normalize_spaces(search_input.theme)
     theme_english = translate_theme(theme)
     condition = canonicalize_condition(search_input.condition) or detect_condition_from_text(theme_english or theme)
@@ -350,14 +351,14 @@ def normalize_query(search_input: SearchInput) -> Dict[str, Any]:
         "modifier_search_terms": modifier_search_terms,
         "fallback_term": fallback_term or None,
         "intervention_terms": unique_keep_order(
-            [intervention] + INTERVENTION_ALIASES.get(intervention or "", [])
+            [intervention, *INTERVENTION_ALIASES.get(intervention or "", [])]
         ) if intervention else [],
     }
 
 
 
-def build_api_requests(normalized_query: Dict[str, Any], page_size: int = 20, max_pages: int = 2) -> List[Dict[str, Any]]:
-    base_params: Dict[str, Any] = {"format": "json", "pageSize": page_size}
+def build_api_requests(normalized_query: dict[str, Any], page_size: int = 20, max_pages: int = 2) -> list[dict[str, Any]]:
+    base_params: dict[str, Any] = {"format": "json", "pageSize": page_size}
     if normalized_query.get("condition"):
         base_params["query.cond"] = normalized_query["condition"]
     if normalized_query.get("intervention"):
@@ -369,7 +370,7 @@ def build_api_requests(normalized_query: Dict[str, Any], page_size: int = 20, ma
     if normalized_query.get("phase", {}).get("api_expression"):
         base_params["filter.advanced"] = normalized_query["phase"]["api_expression"]
 
-    requests: List[Dict[str, Any]] = []
+    requests: list[dict[str, Any]] = []
     modifier_terms = normalized_query.get("modifier_search_terms", [])
     if modifier_terms:
         for index, term in enumerate(modifier_terms, start=1):
@@ -432,12 +433,12 @@ def build_api_requests(normalized_query: Dict[str, Any], page_size: int = 20, ma
 
 
 
-def build_url(endpoint: str, params: Dict[str, Any]) -> str:
+def build_url(endpoint: str, params: dict[str, Any]) -> str:
     return endpoint + "?" + urlencode(params, doseq=True)
 
 
 
-def build_provider_targets(normalized_query: Dict[str, Any], api_requests: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def build_provider_targets(normalized_query: dict[str, Any], api_requests: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     query_text = normalized_query.get("theme_english") or normalized_query.get("query_label") or "clinical trial"
     return [
         {
@@ -478,7 +479,7 @@ def build_provider_targets(normalized_query: Dict[str, Any], api_requests: Seque
 
 
 
-def fetch_json(endpoint: str, params: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+def fetch_json(endpoint: str, params: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
     request = Request(
         build_url(endpoint, params),
         headers={"User-Agent": "clinical-trials-retrieval-skill/0.1"},
@@ -488,9 +489,9 @@ def fetch_json(endpoint: str, params: Dict[str, Any], timeout: int = 30) -> Dict
 
 
 
-def fetch_query_variants(api_requests: Sequence[Dict[str, Any]], max_records: int = 25) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    seen: Dict[str, Dict[str, Any]] = {}
-    fetch_log: List[Dict[str, Any]] = []
+def fetch_query_variants(api_requests: Sequence[dict[str, Any]], max_records: int = 25) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    seen: dict[str, dict[str, Any]] = {}
+    fetch_log: list[dict[str, Any]] = []
     for request in api_requests:
         if len(seen) >= max_records:
             break
@@ -526,7 +527,7 @@ def fetch_query_variants(api_requests: Sequence[Dict[str, Any]], max_records: in
 
 
 
-def get_nested(source: Dict[str, Any], *keys: str, default: Any = None) -> Any:
+def get_nested(source: dict[str, Any], *keys: str, default: Any = None) -> Any:
     current: Any = source
     for key in keys:
         if not isinstance(current, dict):
@@ -538,12 +539,12 @@ def get_nested(source: Dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 
 
-def get_nct_id(study: Dict[str, Any]) -> str | None:
+def get_nct_id(study: dict[str, Any]) -> str | None:
     return get_nested(study, "protocolSection", "identificationModule", "nctId")
 
 
 
-def listify(value: Any) -> List[Any]:
+def listify(value: Any) -> list[Any]:
     if value is None:
         return []
     if isinstance(value, list):
@@ -552,21 +553,21 @@ def listify(value: Any) -> List[Any]:
 
 
 
-def extract_intervention_names(study: Dict[str, Any]) -> List[str]:
+def extract_intervention_names(study: dict[str, Any]) -> list[str]:
     interventions = get_nested(study, "protocolSection", "armsInterventionsModule", "interventions", default=[])
     return unique_keep_order(str(item.get("name", "")) for item in interventions if isinstance(item, dict))
 
 
 
-def extract_arm_groups(study: Dict[str, Any]) -> List[Dict[str, Any]]:
+def extract_arm_groups(study: dict[str, Any]) -> list[dict[str, Any]]:
     arms = get_nested(study, "protocolSection", "armsInterventionsModule", "armGroups", default=[])
     return [item for item in arms if isinstance(item, dict)]
 
 
 
-def extract_locations(study: Dict[str, Any]) -> List[Dict[str, str]]:
+def extract_locations(study: dict[str, Any]) -> list[dict[str, str]]:
     locations = get_nested(study, "protocolSection", "contactsLocationsModule", "locations", default=[])
-    output: List[Dict[str, str]] = []
+    output: list[dict[str, str]] = []
     for item in locations:
         if not isinstance(item, dict):
             continue
@@ -578,7 +579,7 @@ def extract_locations(study: Dict[str, Any]) -> List[Dict[str, str]]:
 
 
 
-def resolved_status(study: Dict[str, Any]) -> str:
+def resolved_status(study: dict[str, Any]) -> str:
     status = normalize_spaces(get_nested(study, "protocolSection", "statusModule", "overallStatus"))
     last_known = normalize_spaces(get_nested(study, "protocolSection", "statusModule", "lastKnownStatus"))
     if status and status != "UNKNOWN":
@@ -589,13 +590,13 @@ def resolved_status(study: Dict[str, Any]) -> str:
 
 
 
-def phase_tokens(study: Dict[str, Any]) -> List[str]:
+def phase_tokens(study: dict[str, Any]) -> list[str]:
     phases = get_nested(study, "protocolSection", "designModule", "phases", default=[])
     return unique_keep_order(str(item) for item in phases)
 
 
 
-def build_text_blob(study: Dict[str, Any]) -> str:
+def build_text_blob(study: dict[str, Any]) -> str:
     sections = [
         get_nested(study, "protocolSection", "identificationModule", "briefTitle", default=""),
         get_nested(study, "protocolSection", "identificationModule", "officialTitle", default=""),
@@ -610,8 +611,8 @@ def build_text_blob(study: Dict[str, Any]) -> str:
 
 
 
-def detect_modifier_hits(study: Dict[str, Any], normalized_query: Dict[str, Any]) -> List[str]:
-    hits: List[str] = []
+def detect_modifier_hits(study: dict[str, Any], normalized_query: dict[str, Any]) -> list[str]:
+    hits: list[str] = []
     title_text = normalize_spaces(
         " ".join(
             [
@@ -658,7 +659,7 @@ def detect_modifier_hits(study: Dict[str, Any], normalized_query: Dict[str, Any]
 
 
 
-def matches_local_filters(study: Dict[str, Any], normalized_query: Dict[str, Any]) -> bool:
+def matches_local_filters(study: dict[str, Any], normalized_query: dict[str, Any]) -> bool:
     requested_phases = normalized_query.get("phase", {}).get("tokens", [])
     if requested_phases:
         study_phases = {token.upper() for token in phase_tokens(study)}
@@ -678,15 +679,11 @@ def matches_local_filters(study: Dict[str, Any], normalized_query: Dict[str, Any
             return False
 
     modifier_concepts = normalized_query.get("modifier_concepts", [])
-    if modifier_concepts:
-        if not detect_modifier_hits(study, normalized_query):
-            return False
-
-    return True
+    return not modifier_concepts or bool(detect_modifier_hits(study, normalized_query))
 
 
 
-def calculate_relevance_score(study: Dict[str, Any], normalized_query: Dict[str, Any]) -> int:
+def calculate_relevance_score(study: dict[str, Any], normalized_query: dict[str, Any]) -> int:
     score = 0
     blob = build_text_blob(study)
     intervention = normalized_query.get("intervention")
@@ -703,7 +700,7 @@ def calculate_relevance_score(study: Dict[str, Any], normalized_query: Dict[str,
 
 
 
-def summarize_locations(locations: Sequence[Dict[str, str]]) -> str:
+def summarize_locations(locations: Sequence[dict[str, str]]) -> str:
     if not locations:
         return "unknown"
     labels = []
@@ -718,9 +715,9 @@ def summarize_locations(locations: Sequence[Dict[str, str]]) -> str:
 
 
 
-def summarize_comparison(arm_groups: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    comparators: List[str] = []
-    experimental: List[str] = []
+def summarize_comparison(arm_groups: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    comparators: list[str] = []
+    experimental: list[str] = []
     for arm in arm_groups:
         label = normalize_spaces(arm.get("label")) or "unnamed arm"
         arm_type = normalize_spaces(arm.get("type"))
@@ -738,9 +735,9 @@ def summarize_comparison(arm_groups: Sequence[Dict[str, Any]]) -> Dict[str, Any]
 
 
 
-def extract_primary_outcomes(study: Dict[str, Any]) -> List[Dict[str, str]]:
+def extract_primary_outcomes(study: dict[str, Any]) -> list[dict[str, str]]:
     outcomes = get_nested(study, "protocolSection", "outcomesModule", "primaryOutcomes", default=[])
-    records: List[Dict[str, str]] = []
+    records: list[dict[str, str]] = []
     for item in outcomes:
         if not isinstance(item, dict):
             continue
@@ -755,7 +752,7 @@ def extract_primary_outcomes(study: Dict[str, Any]) -> List[Dict[str, str]]:
 
 
 
-def extract_effect_summary(study: Dict[str, Any]) -> str:
+def extract_effect_summary(study: dict[str, Any]) -> str:
     if not study.get("hasResults"):
         return "unknown"
     outcomes = get_nested(study, "resultsSection", "outcomeMeasuresModule", "outcomeMeasures", default=[])
@@ -805,7 +802,7 @@ def extract_effect_summary(study: Dict[str, Any]) -> str:
 
 
 
-def extract_trial_record(study: Dict[str, Any], normalized_query: Dict[str, Any]) -> Dict[str, Any]:
+def extract_trial_record(study: dict[str, Any], normalized_query: dict[str, Any]) -> dict[str, Any]:
     nct_id = get_nct_id(study) or "unknown"
     arm_groups = extract_arm_groups(study)
     interventions = extract_intervention_names(study)
@@ -891,8 +888,8 @@ def extract_trial_record(study: Dict[str, Any], normalized_query: Dict[str, Any]
 
 
 
-def extract_trial_records(studies: Sequence[Dict[str, Any]], normalized_query: Dict[str, Any]) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
+def extract_trial_records(studies: Sequence[dict[str, Any]], normalized_query: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
     for study in studies:
         if not matches_local_filters(study, normalized_query):
             continue
@@ -902,8 +899,8 @@ def extract_trial_records(studies: Sequence[Dict[str, Any]], normalized_query: D
 
 
 
-def build_unresolved_questions(results: Sequence[Dict[str, Any]], normalized_query: Dict[str, Any]) -> List[str]:
-    questions: List[str] = []
+def build_unresolved_questions(results: Sequence[dict[str, Any]], normalized_query: dict[str, Any]) -> list[str]:
+    questions: list[str] = []
     if not results:
         questions.append("No trial matched the current structured filters; consider broadening the theme or adding an explicit disease context.")
     if results and all(item["pico"]["O"]["effect_summary"] == "unknown" for item in results):

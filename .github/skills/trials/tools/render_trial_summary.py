@@ -7,11 +7,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 
-
-def load_payload(path: str | None) -> Dict[str, Any]:
+def load_payload(path: str | None) -> dict[str, Any]:
     if path:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     return json.load(sys.stdin)
@@ -28,7 +27,7 @@ def compact(text: str | None, limit: int = 120) -> str:
 
 
 
-def join_list(values: List[str], limit: int = 3) -> str:
+def join_list(values: list[str], limit: int = 3) -> str:
     if not values:
         return "unknown"
     trimmed = values[:limit]
@@ -39,7 +38,7 @@ def join_list(values: List[str], limit: int = 3) -> str:
 
 
 
-def p_summary(record: Dict[str, Any]) -> str:
+def p_summary(record: dict[str, Any]) -> str:
     patient = record.get("pico", {}).get("P", {})
     conditions = join_list(patient.get("conditions", []), limit=2)
     enrollment = patient.get("enrollment", {})
@@ -49,20 +48,20 @@ def p_summary(record: Dict[str, Any]) -> str:
 
 
 
-def i_summary(record: Dict[str, Any]) -> str:
+def i_summary(record: dict[str, Any]) -> str:
     intervention = record.get("pico", {}).get("I", {})
     names = join_list(intervention.get("interventions", []), limit=3)
     return compact(names, limit=100)
 
 
 
-def c_summary(record: Dict[str, Any]) -> str:
+def c_summary(record: dict[str, Any]) -> str:
     comparison = record.get("pico", {}).get("C", {})
     return compact(comparison.get("summary", "unknown"), limit=100)
 
 
 
-def o_summary(record: Dict[str, Any]) -> str:
+def o_summary(record: dict[str, Any]) -> str:
     outcomes = record.get("pico", {}).get("O", {})
     primary = outcomes.get("primary_endpoints", [])
     endpoint = primary[0]["measure"] if primary else "unknown"
@@ -73,12 +72,12 @@ def o_summary(record: Dict[str, Any]) -> str:
 
 
 
-def location_summary(record: Dict[str, Any]) -> str:
+def location_summary(record: dict[str, Any]) -> str:
     return compact(record.get("location_summary", "unknown"), limit=80)
 
 
 
-def phase_summary(record: Dict[str, Any]) -> str:
+def phase_summary(record: dict[str, Any]) -> str:
     phases = record.get("phase", [])
     if not phases:
         return "unknown"
@@ -86,7 +85,7 @@ def phase_summary(record: Dict[str, Any]) -> str:
 
 
 
-def render_table(results: List[Dict[str, Any]]) -> str:
+def render_table(results: list[dict[str, Any]]) -> str:
     lines = [
         "| NCT ID | 标题 | P（患者/样本量） | I（干预） | C（对照） | O（主要终点/疗效） | Phase | Status | 地区 |",
         "|---|---|---|---|---|---|---|---|---|",
@@ -109,8 +108,8 @@ def render_table(results: List[Dict[str, Any]]) -> str:
 
 
 
-def render_evidence(results: List[Dict[str, Any]]) -> str:
-    lines: List[str] = []
+def render_evidence(results: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
     for record in results:
         lines.append(f"- **{record.get('trial_id', 'unknown')}**: {record.get('title', 'unknown')}")
         for item in record.get("evidence", [])[:4]:
