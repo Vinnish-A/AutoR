@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **AutoR upstream sync**: pulled the latest useful upstream `scholaraio` features into AutoR while preserving the AutoR fork's MCP server, `autor-mcp` entry point, and AutoR-only skills
+- **AutoR upstream sync**: pulled the latest useful upstream `autor` features into AutoR while preserving the AutoR fork's MCP server, `autor-mcp` entry point, and AutoR-only skills
 - **Semantic Scholar API key support**: Configure `ingest.s2_api_key` (or env var `S2_API_KEY`) to authenticate Semantic Scholar requests, increasing rate limits from 100 req/5min (public) to 1 req/s (authenticated); polite delay automatically reduced from 3s to 1s when key is present
 
 ### Fixed
