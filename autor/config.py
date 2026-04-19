@@ -168,6 +168,8 @@ class IngestConfig:
         contact_email: Crossref polite pool 联系邮箱（User-Agent），建议放 config.local.yaml。
         s2_api_key: Semantic Scholar API 密钥，有 key 可大幅提升限速（1 req/s vs 100 req/5min）。
             建议放 config.local.yaml 或环境变量 ``S2_API_KEY``。
+        ncbi_api_key: NCBI E-utilities / PubMed API 密钥。用于 PMID 查询，
+            建议放 config.local.yaml 或环境变量 ``NCBI_API_KEY``。
         chunk_page_limit: 超长 PDF 自动切分的页数阈值。超过此值的 PDF 在 MinerU
             转换前自动拆分为多个短 PDF，转换后合并为单个 Markdown。
         mineru_batch_size: MinerU 云 API 每批提交文件数上限，默认 20。
@@ -186,6 +188,7 @@ class IngestConfig:
     abstract_llm_mode: str = "verify"  # off | fallback | verify
     contact_email: str = ""
     s2_api_key: str = ""  # Semantic Scholar API key for higher rate limits
+    ncbi_api_key: str = ""  # NCBI E-utilities API key for PubMed lookups
     chunk_page_limit: int = 100  # auto-split PDFs exceeding this page count
     mineru_batch_size: int = 20  # cloud batch size per request
 
@@ -205,6 +208,29 @@ class TranslateConfig:
     target_lang: str = "zh"
     chunk_size: int = 4000
     concurrency: int = 5
+
+
+@dataclass
+class PlotConfig:
+    """Nano Banana 绘图配置。
+
+    Attributes:
+        host: 绘图服务基础地址。
+        api_key: 绘图 API 密钥，建议放 config.local.yaml 或环境变量。
+        model: 默认绘图模型。
+        image_size: 默认输出尺寸（``"1K"`` | ``"2K"`` | ``"4K"``）。
+        aspect_ratio: 默认输出长宽比（``"auto"`` 或固定比例）。
+        timeout: 单个绘图任务总超时（秒）。
+        poll_interval: 轮询结果接口的间隔（秒）。
+    """
+
+    host: str = "https://grsai.dakka.com.cn"
+    api_key: str = ""
+    model: str = "nano-banana-pro"
+    image_size: str = "1K"
+    aspect_ratio: str = "auto"
+    timeout: int = 600
+    poll_interval: int = 5
 
 
 @dataclass
@@ -234,6 +260,7 @@ class Config:
         search: 全文检索配置。
         topics: BERTopic 主题建模配置。
         log: 日志与指标配置。
+        plot: Nano Banana 绘图配置。
         zotero: Zotero 集成配置。
     """
 
@@ -245,6 +272,7 @@ class Config:
     topics: TopicsConfig = field(default_factory=TopicsConfig)
     log: LogConfig = field(default_factory=LogConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
+    plot: PlotConfig = field(default_factory=PlotConfig)
     zotero: ZoteroConfig = field(default_factory=ZoteroConfig)
 
     # Root directory of the config file (used to resolve relative paths)
@@ -367,6 +395,30 @@ class Config:
         if self.ingest.s2_api_key:
             return self.ingest.s2_api_key
         return os.environ.get("S2_API_KEY", "")
+
+    def resolved_ncbi_api_key(self) -> str:
+        """按优先级查找 NCBI E-utilities API key。
+
+        查找顺序: config ``ingest.ncbi_api_key`` → 环境变量 ``NCBI_API_KEY``。
+
+        Returns:
+            API key 字符串，未找到则返回空字符串。
+        """
+        if self.ingest.ncbi_api_key:
+            return self.ingest.ncbi_api_key
+        return os.environ.get("NCBI_API_KEY", "")
+
+    def resolved_plot_api_key(self) -> str:
+        """按优先级查找绘图 API key。
+
+        查找顺序: config ``plot.api_key`` → 环境变量 ``AUTOR_PLOT_API_KEY``。
+
+        Returns:
+            API key 字符串，未找到则返回空字符串。
+        """
+        if self.plot.api_key:
+            return self.plot.api_key
+        return os.environ.get("AUTOR_PLOT_API_KEY", "")
 
 
 # ============================================================================
@@ -495,6 +547,7 @@ def _build_config(data: dict, root: Path) -> Config:
         abstract_llm_mode=ingest_data.get("abstract_llm_mode", "verify"),
         contact_email=ingest_data.get("contact_email") or "",
         s2_api_key=ingest_data.get("s2_api_key") or "",
+        ncbi_api_key=ingest_data.get("ncbi_api_key") or "",
         mineru_batch_size=int(ingest_data.get("mineru_batch_size") or 20),
         chunk_page_limit=int(ingest_data.get("chunk_page_limit") or 100),
     )
@@ -546,6 +599,17 @@ def _build_config(data: dict, root: Path) -> Config:
         concurrency=max(1, int(translate_data.get("concurrency", 5))),
     )
 
+    plot_data = data.get("plot", {}) or {}
+    plot = PlotConfig(
+        host=os.environ.get("AUTOR_PLOT_HOST") or plot_data.get("host", "https://grsai.dakka.com.cn"),
+        api_key=plot_data.get("api_key") or "",
+        model=os.environ.get("AUTOR_PLOT_MODEL") or plot_data.get("model", "nano-banana-pro"),
+        image_size=os.environ.get("AUTOR_PLOT_IMAGE_SIZE") or plot_data.get("image_size", "1K"),
+        aspect_ratio=os.environ.get("AUTOR_PLOT_ASPECT_RATIO") or plot_data.get("aspect_ratio", "auto"),
+        timeout=max(1, int(plot_data.get("timeout", 600))),
+        poll_interval=max(1, int(plot_data.get("poll_interval", 5))),
+    )
+
     zotero_data = data.get("zotero", {}) or {}
     zotero = ZoteroConfig(
         api_key=zotero_data.get("api_key") or "",
@@ -562,6 +626,7 @@ def _build_config(data: dict, root: Path) -> Config:
         topics=topics,
         log=log,
         translate=translate,
+        plot=plot,
         zotero=zotero,
         _root=root,
     )

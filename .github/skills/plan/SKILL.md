@@ -23,7 +23,8 @@ The focus of this skill is not to write the main text directly, but to answer fo
 - Write outputs into the `workspace/<name>/` directory.
 - By default, treat the **Springer Nature Reviews style** as the preferred reference framework; if the user later wants to target another journal, you can make a second round of adjustments on top of this baseline.
 - Treat the local knowledge base / total library as **reference-only**. It is useful for local orientation, but it is not sufficient to prove that the literature is complete for a field or subtopic.
-- When judging whether the literature is complete enough, rely on **AutoDownload-mediated external database retrieval and metadata**, not only on what already exists in the local library.
+- When judging whether the literature is complete enough, rely on **Records-service external database retrieval and metadata**, not only on what already exists in the local library.
+- If the user specifies `full_review`, `large review`, or otherwise signals that coverage breadth is essential, do not let early pruning collapse the field into a tiny “best papers only” set. Planning must preserve a visible coverage layer in addition to the later core analytical layer.
 
 ## Execution logic
 
@@ -32,11 +33,20 @@ The focus of this skill is not to write the main text directly, but to answer fo
 First confirm the following information:
 
 - **Review type**: standalone review article, a literature review chapter in a thesis, a project report, or the Related Work section of a paper
+- **Review scope profile**: `full_review`, `mini_review`, `focused_review`, or equivalent user wording
 - **Language**: Chinese / English
+- **User-provided framework / logical axes / supporting pillars**: which conceptual units must be preserved and which may be revised
 - **User-provided subheadings**: which are non-negotiable and which may be adjusted
 - **Target audience / publication target**: determines structural depth and table granularity
 - **Whether to emphasize a systematic-review style**: if yes, later steps should record inclusion/exclusion logic and comparison criteria more strictly
 - **Whether deviation from Springer Nature Reviews style is allowed**: by default it is not; if the user specifies another journal template, explain the differences
+- **Whether the user supplied a fixed execution choreography**: for example `Orchestrator + Plan + Trials only`, fixed artifacts, staged output rules, exclusion rules, or a machine-readable handoff contract
+
+Interpret the scope profiles as follows:
+
+- `full_review`: coverage-first; first map the field broadly, then derive the core analytical corpus
+- `mini_review`: representative rather than exhaustive; a smaller but still defensible corpus is acceptable
+- `focused_review`: exhaustive within the narrowed boundary; depth matters more than breadth outside the scope
 
 ### 2. Revise the heading structure using both reasoning and evidence, with Springer Nature Reviews as the reference style
 
@@ -48,9 +58,25 @@ autor topics                             # topic clusters (if already modeled)
 autor show <dir_name> --level 2          # read abstracts paper by paper
 ```
 
-This initial local scan is for orientation only. If a heading appears thin, missing, or suspiciously one-sided, verify coverage against external databases through AutoDownload metadata retrieval rather than concluding from the local library alone.
+This initial local scan is for orientation only. If a heading appears thin, missing, or suspiciously one-sided, verify coverage against external databases through the Records service metadata retrieval rather than concluding from the local library alone.
 
 Evaluate each user-provided heading one by one. Do not change the structure based on intuition alone; you must explain the **evidence basis**:
+
+If the user supplied a broader framework such as logical axes, supporting pillars, or a theory-driven scaffold, treat that framework as an explicit design prior rather than disposable prompt text. Audit each unit and record one of:
+
+- **Keep**
+- **Merge**
+- **Split**
+- **Rename**
+- **Reposition**
+- **Defer as evidence-thin**
+- **Drop as unsupported**
+
+It is recommended to leave a traceable framework-audit table:
+
+| User framework unit | Action | Where carried forward | Evidence status | Reason |
+|--------|------|--------|----------|----------|
+| Axis / pillar / proposed section | Keep / Merge / Split / Rename / Reposition / Defer / Drop | Final section or note | Strong / medium / thin | Evidence-based explanation |
 
 At the same time, use the common review-organizing logic of Springer Nature Reviews as the default framework for correcting the structure:
 
@@ -99,7 +125,7 @@ autor show <dir_name> --level 4          # read the full text for core papers
 
 The goal of classification is not to discard papers as quickly as possible, but to build a high-coverage classification result for **all scanned literature in the workspace**. As long as a paper’s **conclusion, method, subject, data condition, controversy, or limitation** is relevant to a heading, it should, as much as possible, be assigned to at least one category.
 
-However, workspace coverage and total-library coverage are not the same thing. If an important section, controversy, or canonical paper seems absent, perform an external metadata check through AutoDownload before deciding that the field truly lacks evidence.
+However, workspace coverage and total-library coverage are not the same thing. If an important section, controversy, or canonical paper seems absent, perform an external metadata check through the Records service before deciding that the field truly lacks evidence.
 
 When classifying, do not simply “slot papers under headings”; instead, build an **evidence classification matrix**. At minimum, it is recommended to record the following fields:
 
@@ -142,6 +168,14 @@ Retention/removal rules must follow this priority:
 1. **Explicit user instructions take priority**
 2. **Only if the user has not specified anything may Plan decide on its own**
 
+For `full_review`, use a layered retention policy instead of a single early retained set:
+
+- `coverage corpus`: all directly relevant papers that define the field boundary
+- `core analytical corpus`: the subset that anchors the review's main mechanistic, translational, and clinical arguments
+- `writing nucleus`: the papers that each drafted section must actively use
+
+In a full review, a paper may fall out of the `core analytical corpus` without being erased from the `coverage corpus`.
+
 If the user has given pruning constraints, they must be followed strictly. For example:
 
 - The user says “you must not remove more than 1/4”
@@ -161,6 +195,8 @@ If the user **has not explicitly specified** any such constraint, Plan may decid
 
 - Explicitly record the total number of papers, retained count, removed count, and removal ratio
 - Write down the reason for every removed paper, for example: peripherally relevant, highly redundant information, not directly relevant to the current review question, or clearly lower evidence quality without being a key counterexample
+
+For `full_review`, do not remove a directly relevant paper from the coverage layer merely because it is low-impact or not central enough. Such papers may be downgraded from `core analytical corpus` to `coverage corpus`, but the field map should still show that they exist.
 
 Regardless of whether the user set limits, **every paper retained in the final set must be assigned to at least one body section and must be cited at least once in the subsequent formal draft**. In other words, the retained set is the minimum citation-coverage set for subsequent `/write`.
 
@@ -185,7 +221,7 @@ If a review is retained, record both:
 
 For example, a retained review may anchor the introduction, but it should not replace direct mechanistic or causal evidence when those claims depend on original studies.
 
-When a key paper is absent from the local library but clearly present in external-database retrieval, do not quietly proceed without it. Acquire it first through the AutoDownload pipeline when feasible, then classify it with the rest of the evidence.
+When a key paper is absent from the local library but clearly present in external-database retrieval, do not quietly proceed without it. Acquire it first through the Records service pipeline when feasible, then classify it with the rest of the evidence.
 
 ### 4. Extract at least L3-level conclusion evidence by category
 
@@ -193,7 +229,7 @@ Once classification is complete, do not jump immediately to writing or table con
 
 - For every paper included in that category, extract at least **L3 (conclusion)**-level information
 - If L3 is missing, too short, or insufficient to support the category judgment, go back to L4 and supplement with relevant passages, but the output should still be organized as “conclusion evidence for this category”
-- If the paper is not in the local library, or if the existing local record has no usable L3 conclusion, obtain the paper through the AutoDownload download + processing workflow first whenever possible
+- If the paper is not in the local library, or if the existing local record has no usable L3 conclusion, obtain the paper through the Records service download + processing workflow first whenever possible
 - If full-text processing still fails to yield a usable L3 layer, expose the full text to a dedicated reading subagent and require it to produce a structured note covering:
   - what the article is mainly about
   - what conclusions the article supports
@@ -309,7 +345,7 @@ Beyond the three core tasks above, the following items should usually also be co
   autor ws search <name> "<keyword>"
   autor usearch "<keyword>"
   ```
-- When completeness matters, record what was checked through AutoDownload metadata retrieval and what remains absent even after external search
+- When completeness matters, record what was checked through the Records service metadata retrieval and what remains absent even after external search
 
 #### (e) Claim–evidence mapping
 
@@ -338,12 +374,16 @@ At the end of Plan, do not output only a loose outline. It is recommended to gen
 - `table-plan.md`: design plans for at least 3 tables (purpose, fields, included papers, sorting rules)
 - `execution-tasks.md`: list **all follow-up writing and supplementary tasks** using a fixed structure
 
-When external completeness checking was needed, also record where that judgment came from: local reference only, AutoDownload metadata retrieval, or downloaded full-text evidence. Put this note in `review-plan.md` or `search-gaps.md`.
+When external completeness checking was needed, also record where that judgment came from: local reference only, Records service metadata retrieval, or downloaded full-text evidence. Put this note in `review-plan.md` or `search-gaps.md`.
+
+If the user supplied a heavy framework process, the plan should also preserve the user's choreography. That means the artifact set and ordering should not be improvised away. Keep the user-requested staging and handoff discipline unless there is a concrete reason to revise it.
 
 If the workspace is large or the goal is a high-quality systematic review, you may additionally provide:
 
 - `evidence-map.md`: claim–evidence–counterevidence mapping
 - `search-gaps.md`: suggested keywords and missing directions for supplementary search
+- `query-matrix.md`: the external query matrix used to test field coverage
+- `corpus-ledger.md`: the universe/working/core corpus counts and status log
 
 #### Write Plan content in stages
 
@@ -377,9 +417,13 @@ It is recommended that `review-plan.md` use the following structure consistently
    - workspace
    - review topic
    - target audience / target journal
+   - review scope profile
    - language
+   - user framework summary
    - structural style baseline (default: Springer Nature Reviews)
    - retained review-layer policy
+   - corpus-layer policy
+   - execution choreography summary
    - external coverage-check status
 2. **Final outline (revised)**
    - provide the final chapter/subheading tree
@@ -387,13 +431,15 @@ It is recommended that `review-plan.md` use the following structure consistently
 3. **Reasons for structural revision**
    - explain Keep / Merge / Split / Rename / Reorder / Add / Drop by heading
    - provide the evidence basis for every item
-4. **Section Cards**
+4. **Framework preservation / revision audit**
+   - show how the user-provided framework units were kept, merged, split, repositioned, deferred, or dropped
+5. **Section Cards**
    - expand every main section using the same template
-5. **Table plan**
+6. **Table plan**
    - at least 3 tables
    - the purpose, fields, included items, sorting rules, and corresponding section of each table
-6. **Evidence-thin areas and supplementary search suggestions**
-7. **Writing order and dependencies**
+7. **Evidence-thin areas and supplementary search suggestions**
+8. **Writing order and dependencies**
 
 #### `paper-classification.md` fixed structure
 
@@ -401,8 +447,10 @@ It is recommended that `paper-classification.md` contain at least the following 
 
 1. **Explanation of classification principles**
      - which scan level has been completed (L2 / L3 / L4)
+     - review scope profile
      - whether duplicate classification is allowed (default: yes)
      - classification coverage target (default: cover all scanned literature as much as possible)
+     - corpus-layer policy if full-review mode is active
      - whether external-database completeness checking was performed
 2. **Retention / removal rules and statistics**
     - total number of papers evaluated
@@ -506,6 +554,7 @@ At minimum, check the following:
    - Are unclassified papers truly impossible to classify, with sufficient justification
    - Have multiply classified papers retained the necessary place under all relevant sections
    - Has a deliberate review layer been retained, rather than accidentally pruning away all major prior syntheses
+   - In `full_review` mode, is the coverage layer still visibly broader than the core analytical layer
 3. **Evidence check**
    - Has every category accumulated at least L3-level conclusion evidence
    - Are the evidence entries sufficient to support later body writing and tables
@@ -517,6 +566,7 @@ At minimum, check the following:
 5. **Task check**
    - Does `execution-tasks.md` cover the tasks needed for subsequent writing
    - Are dependencies and expected outputs clear
+   - If the user supplied a fixed choreography, was it preserved rather than silently replaced
 6. **Staged-output check**
    - Has the content already been written out in stages rather than dumped all at once
    - If any round was too large, was it split further
@@ -527,6 +577,7 @@ At minimum, check the following:
 8. **Coverage-source check**
    - Were completeness judgments made against external database retrieval rather than local-library density alone
    - If a key paper was absent locally, was it fetched or at least explicitly logged as externally found but not yet processed
+   - In `full_review` mode, was the field first mapped broadly before strong pruning decisions were made
 
 Only after this review step passes should formal writing begin.
 

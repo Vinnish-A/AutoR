@@ -186,6 +186,7 @@ class TestMetadataToDict:
             authors=["Smith"],
             year=2023,
             doi="10.1234/test",
+            pmid="12345678",
         )
         d = metadata_to_dict(meta)
         assert d["id"] == "test-uuid"
@@ -193,6 +194,8 @@ class TestMetadataToDict:
         assert d["authors"] == ["Smith"]
         assert d["year"] == 2023
         assert d["ids"]["doi"] == "10.1234/test"
+        assert d["pmid"] == "12345678"
+        assert d["ids"]["pmid"] == "12345678"
 
     def test_citation_counts(self):
         meta = PaperMetadata(
@@ -213,11 +216,13 @@ class TestMetadataToDict:
     def test_ids_populated(self):
         meta = PaperMetadata(
             doi="10.1234/test",
+            pmid="12345678",
             s2_paper_id="abc123",
             openalex_id="https://openalex.org/W123",
         )
         d = metadata_to_dict(meta)
         assert d["ids"]["doi"] == "10.1234/test"
+        assert d["ids"]["pmid"] == "12345678"
         assert d["ids"]["semantic_scholar"] == "abc123"
         assert "openalex" in d["ids"]
 

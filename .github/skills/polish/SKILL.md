@@ -1,6 +1,6 @@
 ---
 name: polish
-description: Polish academic writing for publication — remove AI and workflow artifacts, normalize terminology, improve clarity, and rewrite draft-like or self-referential prose into submission-ready scholarly text. Supports both Chinese and English.
+description: Polish academic writing for publication — remove AI and workflow artifacts, sharpen conclusion-led judgment, normalize terminology, improve clarity, and rewrite draft-like or self-referential prose into submission-ready scholarly text. Supports both Chinese and English.
 license: MIT
 ---
 
@@ -12,6 +12,7 @@ Core goals:
 - remove AI traces
 - remove pipeline / review / self-correction traces
 - remove metanarrative and “writing action” language
+- sharpen conclusion-led judgment
 - normalize terminology
 - improve clarity, judgment, and publication readiness
 - ensure the prose presents **the research facts and argument themselves**, rather than the author's visible effort to organize them
@@ -31,6 +32,8 @@ The polished manuscript text must satisfy the following principles:
 5. **The text must read like a finished manuscript ready for submission, not an intermediate version still being repaired by AI**
 
 Any sentence that sounds more like an editorial instruction, self-explanation, or revision note must be rewritten into a real scholarly statement—or deleted outright.
+
+The target voice is an author who has already finished reading the evidence and is now making disciplined judgments from it. The prose should feel chosen, not auto-completed.
 
 ---
 
@@ -84,7 +87,7 @@ Hard rule:
 
 ## 3. High-priority cleanup targets
 
-This skill has six high-priority cleanup categories. Handle them systematically rather than merely smoothing wording on the surface.
+This skill has seven high-priority cleanup categories. Handle them systematically rather than merely smoothing wording on the surface.
 
 ---
 
@@ -172,6 +175,8 @@ Priority cleanup targets include:
 - `Furthermore`
 - `Moreover`
 - `Meanwhile`
+- `Therefore`
+- `Thereby`
 - `It is worth noting that`
 - `It should not be overlooked that`
 - `Overall`
@@ -192,7 +197,28 @@ Special caution:
 
 ---
 
-### Category 4: overt self-correction traces and visible revision traces
+### Category 4: ornamental synthesis without adjudication
+
+Priority cleanup targets include:
+
+- `The evidence reveals ...`
+- `occupies a distinctive niche`
+- `rich in mechanistic ingenuity`
+- `translational trajectory`
+- `broad therapeutic spectrum`
+- `underscores the versatility of`
+- polished closing lines that sound authoritative but do not rank evidence, state a boundary, or identify the decisive comparison
+
+Revision direction:
+
+- replace ornamental synthesis with the actual ranked conclusion
+- state which branch is strongest, which evidence is thin, and what should not yet be claimed
+- let some sentences stay plain if plainness carries more truth
+- if a sentence would still sound impressive after deleting its citations, it is probably too abstract and should be rewritten
+
+---
+
+### Category 5: overt self-correction traces and visible revision traces
 
 When a model keeps polishing a text after being corrected, it often leaves the revision process inside the prose, for example:
 
@@ -218,7 +244,7 @@ Hard constraint:
 
 ---
 
-### Category 5: decorative but empty modifiers and conversational phrasing
+### Category 6: decorative but empty modifiers and conversational phrasing
 
 Priority cleanup targets include:
 
@@ -244,7 +270,7 @@ Revision direction:
 
 ---
 
-### Category 6: broken bilingual terminology and inconsistent terminology
+### Category 7: broken bilingual terminology and inconsistent terminology
 
 Priority cleanup targets include:
 
@@ -298,10 +324,12 @@ These are instructions to an editor or a prompt, not sentences for a finished su
 ## 5. Academic-convention checks
 
 - **Logical coherence**: paragraphs should have clear causal, contrastive, or progressive relationships
+- **Judgment density**: major sections should state what is established, what is only suggestive, and what is overread
 - **Precision**: reduce vague words such as “many,” “some,” or “significant” unless they are defined; be specific whenever possible
 - **Terminology consistency**: the same concept should be named consistently throughout
 - **Tense correctness**: methods/results usually take past tense; field-level consensus usually takes present tense
 - **Stable perspective**: maintain objective third-person scholarly narration throughout
+- **Cadence variation**: not every paragraph should climax in a polished synthesis flourish or repeated em-dash compression
 - **Remove system-environment traces**: no workflow language should remain
 - **Remove metanarrative traces**: the author should not visibly narrate the organization of the text
 - **Finished-manuscript expression**: the whole text should read like a finalized paper, not a manuscript under repair

@@ -39,6 +39,7 @@ cli.py — autor 命令行入口
     autor import-zotero [--api-key KEY] [--library-id ID] [--local PATH] [--list-collections] ...
     autor attach-pdf <paper-id> <path/to/paper.pdf>
     autor citation-check [<file>] [--ws <workspace-name>]
+    autor plot <prompt> [--ws <workspace-name>] [--name STEM]
     autor ws init <name>
     autor ws add <name> <paper-refs...> [--search Q] [--topic ID] [--all]
     autor ws remove <name> <paper-refs...>
@@ -47,6 +48,7 @@ cli.py — autor 命令行入口
     autor ws search <name> <query> [--top N] [--mode unified|keyword|semantic]
     autor ws rename <old-name> <new-name>
     autor ws export <name> [-o FILE]
+    autor ws export-meta <name> [-o FILE] [--format json|jsonl|csv]
 """
 
 from __future__ import annotations
@@ -55,6 +57,8 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+
+import requests
 
 from autor.config import load_config
 from autor.log import ui
@@ -1438,6 +1442,58 @@ def cmd_document(args: argparse.Namespace, cfg) -> None:
         sys.exit(1)
 
 
+def cmd_plot(args: argparse.Namespace, cfg) -> None:
+    from autor import workspace as workspace_mod
+    from autor.plot import PlotError, generate_plot
+
+    if args.workspace and not workspace_mod.validate_workspace_name(args.workspace):
+        _log.error("非法工作区名称: %s", args.workspace)
+        sys.exit(1)
+
+    prompt = " ".join(args.prompt or []).strip()
+    if args.prompt_file:
+        prompt_path = Path(args.prompt_file)
+        if not prompt_path.exists():
+            _log.error("prompt 文件不存在: %s", prompt_path)
+            sys.exit(1)
+        try:
+            prompt = prompt_path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            _log.error("读取 prompt 文件失败: %s", e)
+            sys.exit(1)
+
+    if not prompt:
+        _log.error("请提供 prompt 文本或 --prompt-file")
+        sys.exit(1)
+
+    try:
+        summary = generate_plot(
+            prompt,
+            cfg=cfg,
+            workspace=args.workspace,
+            output_dir=Path(args.output_dir) if args.output_dir else None,
+            name=args.name,
+            urls=args.ref_url,
+            host=args.host,
+            api_key=args.api_key,
+            model=args.model,
+            image_size=args.image_size,
+            aspect_ratio=args.aspect_ratio,
+            timeout=args.timeout,
+            poll_interval=args.poll_interval,
+        )
+    except (OSError, PlotError, requests.RequestException) as e:
+        _log.error("绘图失败: %s", e)
+        sys.exit(1)
+
+    files = summary.get("files") or []
+    ui(f"已生成 {len(files)} 张图片")
+    for file_path in files:
+        ui(f"  - {file_path}")
+    ui(f"任务 ID: {summary.get('id', '')}")
+    ui(f"元数据: {summary.get('meta_file', '')}")
+
+
 def _cmd_document_inspect(args: argparse.Namespace, cfg) -> None:
     from autor.document import inspect
 
@@ -1556,7 +1612,7 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
 
     # Validate workspace-name style arguments in CLI layer to prevent path traversal.
     names_to_check: list[str] = []
-    if action in {"init", "add", "remove", "show", "search", "export"}:
+    if action in {"init", "add", "remove", "show", "search", "export", "export-meta"}:
         names_to_check.append(args.name)
     elif action == "rename":
         names_to_check.extend([args.old_name, args.new_name])
@@ -1671,6 +1727,25 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
         ui(f"工作区 {args.name}: {len(papers)} 篇论文")
         for i, p in enumerate(papers, 1):
             ui(f"  {i:3d}. {p['dir_name']}")
+
+    elif action == "export-meta":
+        ws_dir = ws_root / args.name
+        rows = workspace.export_metadata(ws_dir, cfg.papers_dir, cfg.index_db)
+        if not rows:
+            ui("工作区为空，或未找到可导出的元信息")
+            return
+        try:
+            payload = workspace.dump_metadata(rows, fmt=args.format)
+        except ValueError as e:
+            _log.error("%s", e)
+            sys.exit(1)
+
+        if args.output:
+            out = Path(args.output)
+            out.write_text(payload, encoding="utf-8")
+            ui(f"已导出到 {out}（{len(rows)} 篇，{args.format}）")
+        else:
+            print(payload, end="")
 
     elif action == "search":
         ws_dir = ws_root / args.name
@@ -3054,6 +3129,16 @@ def main() -> None:
     p_ws_export.add_argument("-o", "--output", type=str, default=None, help="输出文件路径")
     _add_filter_args(p_ws_export)
 
+    p_ws_export_meta = p_ws_sub.add_parser("export-meta", help="导出工作区论文 PMID/DOI 等元信息")
+    p_ws_export_meta.add_argument("name", help="工作区名称")
+    p_ws_export_meta.add_argument("-o", "--output", type=str, default=None, help="输出文件路径")
+    p_ws_export_meta.add_argument(
+        "--format",
+        choices=["json", "jsonl", "csv"],
+        default="json",
+        help="导出格式（默认 json）",
+    )
+
     # --- import-endnote ---
     p_ie = sub.add_parser("import-endnote", help="从 Endnote XML/RIS 导入论文元数据")
     p_ie.set_defaults(func=cmd_import_endnote)
@@ -3090,6 +3175,28 @@ def main() -> None:
     p_cc.set_defaults(func=cmd_citation_check)
     p_cc.add_argument("file", nargs="?", default=None, help="待检查的文件路径（省略则从 stdin 读取）")
     p_cc.add_argument("--ws", type=str, default=None, help="在指定工作区范围内验证")
+
+    # --- plot ---
+    p_plot = sub.add_parser("plot", help="调用 Nano Banana 生成图片并保存到 workspace/")
+    p_plot.set_defaults(func=cmd_plot)
+    p_plot.add_argument("prompt", nargs="*", help="绘图提示词（省略时可用 --prompt-file）")
+    p_plot.add_argument("--prompt-file", type=str, default=None, help="从文件读取完整 prompt")
+    p_plot.add_argument("--ws", dest="workspace", type=str, default=None, help="输出到 workspace/<name>/figure/")
+    p_plot.add_argument("--name", type=str, default=None, help="输出文件名 stem（不含扩展名）")
+    p_plot.add_argument("--output-dir", type=str, default=None, help="显式输出目录（覆盖 --ws 默认路径）")
+    p_plot.add_argument("--ref-url", action="append", default=None, help="参考图 URL，可重复传入")
+    p_plot.add_argument("--host", type=str, default=None, help="临时覆盖 plot.host")
+    p_plot.add_argument("--api-key", type=str, default=None, help="临时覆盖 plot.api_key")
+    p_plot.add_argument("--model", type=str, default=None, help="临时覆盖绘图模型（默认读 config plot.model）")
+    p_plot.add_argument("--image-size", choices=["1K", "2K", "4K"], default=None, help="输出尺寸（默认读配置）")
+    p_plot.add_argument(
+        "--aspect-ratio",
+        choices=["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "1:4", "4:1", "1:8", "8:1"],
+        default=None,
+        help="输出长宽比（默认读配置）",
+    )
+    p_plot.add_argument("--timeout", type=int, default=None, help="总超时秒数（默认读配置）")
+    p_plot.add_argument("--poll-interval", type=int, default=None, help="结果轮询间隔秒数（默认读配置）")
 
     # --- setup ---
     p_setup = sub.add_parser("setup", help="环境检测与安装向导 / Setup wizard")
@@ -3178,12 +3285,15 @@ def main() -> None:
 
     from autor import log as _log
     from autor import metrics as _metrics
-    from autor.ingest.metadata._models import configure_s2_session, configure_session
+    from autor.ingest.metadata._models import configure_metadata_sessions
 
     session_id = _log.setup(cfg)
     _metrics.init(cfg.metrics_db_path, session_id)
-    configure_session(cfg.ingest.contact_email)
-    configure_s2_session(cfg.resolved_s2_api_key())
+    configure_metadata_sessions(
+        cfg.ingest.contact_email,
+        cfg.resolved_s2_api_key(),
+        cfg.resolved_ncbi_api_key(),
+    )
 
     args.func(args, cfg)
 

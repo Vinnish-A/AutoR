@@ -1,6 +1,6 @@
 ---
 name: write
-description: Draft a fact-grounded review manuscript from the current workspace by following the `/plan` outputs, using seeded section openings, restrained Nature Reviews-style control, and DOCX-ready Markdown citations with CSL. Use this after planning when the user wants the full draft.
+description: Draft a fact-grounded review manuscript from the current workspace by following the `/plan` outputs, using conclusion-led section seeds, restrained Nature Reviews-style control, and DOCX-ready Markdown citations with CSL. Use this after planning when the user wants the full draft.
 ---
 
 # Plan-Grounded Review Drafting
@@ -11,9 +11,10 @@ Use this skill after `/plan`. It turns a fixed outline and evidence base into ma
 
 1. **Fact-grounded**: use only papers and evidence that already exist in the current workspace
 2. **Plan-grounded**: follow the structure and section tasks produced by `/plan`
-3. **Style-guided, not style-copying**: absorb register and structure, not phrases
-4. **Seeded drafting**: vary argumentative entry points instead of writing every section from the same template
-5. **DOCX-ready citations**: use Markdown citations plus a real CSL file
+3. **Conclusion-led judgment**: section-level claims must start from retained conclusions, comparative evidence, and boundary conditions rather than generic balance
+4. **Style-guided, not style-copying**: absorb register and structure, not phrases
+5. **Seeded drafting**: vary argumentative entry points, but anchor every seed to a section conclusion rather than a reusable rhetorical template
+6. **DOCX-ready citations**: use Markdown citations plus a real CSL file
 
 ## Required inputs
 
@@ -120,32 +121,50 @@ reference-section-title: References
 ---
 ```
 
-### 3. Build a seed map before drafting
+### 3. Build a conclusion-led seed map before drafting
 
-Do not begin by free-writing the introduction. First build **section seeds**.
+Do not begin by free-writing the introduction. First extract a **conclusion kernel** for each section.
 
-A seed is not a title, theme, or conclusion. It is a precise argumentative entry point for a section.
+A conclusion kernel is the short judgment the retained evidence can actually support:
+
+- what looks robust
+- what is limited or contested
+- what the section should refuse to overclaim
+
+Only then build **section seeds**.
+
+A seed is not a title, theme, or generic scene-setter. It is the first argumentative move that lets the section arrive quickly at that kernel.
+
+Build seeds in this order:
+
+1. distill the section's conclusion kernel into 1-2 sentences from `review-plan.md` and `section-evidence.md`
+2. note the strongest comparison, boundary, contradiction, or practical decision point
+3. draft 2-4 seed candidates from different families
+4. discard any seed that could open three unrelated sections equally well
 
 Seed families:
 
 | Seed family | Use when | Example move |
 | --- | --- | --- |
-| Misread -> correction | The field is commonly framed in a misleading way | "X is often treated as ..., but the evidence is tighter than that." |
-| Boundary tightening | The topic is broad and needs scope control | "This review is not about all forms of X; it is about the subset that changes Y." |
-| Pressure -> mechanism | A biological or clinical pressure organizes the section | "Cells at this stage do not face one problem but a specific pressure stack." |
-| Failure mode | The section works best when organized around what breaks first | "The second step becomes necessary only after a distinct failure mode appears." |
-| State switch | The section is about transition, not static classification | "The key change is not more X, but a shift from state A to state B." |
-| Paradigm shift | New data changed an older consensus | "The older view treated X as ..., but newer evidence ties it to ..." |
-| Decision point | Clinical or translational sections need choice logic | "The practical question is not whether to intervene, but when and on what basis." |
-| Evidence gap | The honest move is to define what can and cannot yet be claimed | "The field has a usable model here, but not yet a complete causal chain." |
+| Misread -> correction | The field is commonly framed in a misleading way | "These systems are often grouped together, yet the retained studies separate them by viability control rather than by indication." |
+| Boundary tightening | The topic is broad and needs scope control | "Only a subset of these platforms shares the fabrication and biosafety constraints that matter here." |
+| Pressure -> mechanism | A biological or clinical pressure organizes the section | "Most designs are constrained first by bacterial survival during solidification, and the rest of the section follows from that pressure." |
+| Failure mode | The section works best when organized around what breaks first | "The turning point is loss of viability during fabrication, because later design choices are already constrained by that first break." |
+| State switch | The section is about transition, not static classification | "Progress began once the payload was treated as an active biological system instead of inert cargo." |
+| Paradigm shift | New data changed an older consensus | "Early reports established feasibility; later studies changed the question to which bacterial functions survive delivery." |
+| Decision point | Clinical or translational sections need choice logic | "The real divide in the data is which indications justify a live payload despite its manufacturing and safety cost." |
+| Evidence gap | The honest move is to define what can and cannot yet be claimed | "Animal efficacy looks plausible, but long-term biosafety and dose control remain thinly evidenced." |
+| Ranking judgment | The section needs clear selection rather than equal weighting | "Vaccination and wound repair are supported by deeper evidence than oncology or gas-driven delivery." |
+| Mismatch / friction | The section is organized by a design tension | "Mechanical performance and bacterial viability improve under different fabrication conditions, and that tension structures the section." |
 
 Seed rules:
 
 1. A seed must be specific enough to generate a first paragraph
-2. A seed must arise from workspace evidence, not generic rhetoric
+2. A seed must arise from workspace evidence and the section conclusion kernel, not generic rhetoric
 3. A seed should open one problem, not the whole field
-4. A seed should not already contain the final verdict
-5. A seed should sound different from the seeds used in nearby sections
+4. A seed may contain a provisional judgment if the evidence supports it, but it must still generate forward motion
+5. A seed should sound different from the seeds used in nearby sections, both in logic and cadence
+6. If a seed still works after swapping in a different topic noun, it is too generic
 
 For the **introduction**, each **major section opening**, and the **conclusion**, draft **2-4 seeds from different families** before choosing one.
 
@@ -154,6 +173,8 @@ Then:
 1. select one primary seed
 2. keep one reserve seed only if needed
 3. note which opening moves are already used
+
+Prefer seeds that begin from a conclusion, ranking, contradiction, or boundary—not from scenery.
 
 Do not generate three full section drafts by default. Generate several openings, choose one, then continue.
 
@@ -167,8 +188,11 @@ Before writing full sections, draft the opening paragraph for:
 
 This is where most sameness begins. Fix it here, not later.
 
+Each opening paragraph should cash out the section's conclusion fast. By the end of the opening, the reader should know what the section is prepared to judge, not just what topic area it covers.
+
 Good section openings usually do one of these:
 
+- put the controlling conclusion or tension near sentence 1
 - define the real problem quickly
 - narrow the scope
 - install a mechanism or decision frame
@@ -182,6 +206,7 @@ Weak section openings usually do this:
 - paper listing
 - telling the reader what the section will do
 - repeating the same contrast formula used in the previous section
+- grand synthesis lines that could fit almost anywhere
 
 ### 5. Draft the body section by section
 
@@ -198,17 +223,21 @@ For each section:
 3. read the relevant evidence in `section-evidence.md`
 4. check which tables from `table-plan.md` belong here
 5. choose the section seed
-6. write a short section thesis in 1-2 sentences
-7. build paragraphs from claim -> explanation/evidence -> implication/boundary
-8. confirm that every citation key exists in `references.bib`
+6. write a short section thesis in 1-2 sentences stating what the retained evidence supports most strongly, where it breaks, and what comparison the section will adjudicate
+7. build paragraphs from claim -> conclusion evidence -> reason for divergence -> implication/boundary
+8. prefer one hard judgment with boundaries over two balanced abstractions
+9. confirm that every citation key exists in `references.bib`
 
 ### 6. Keep the register controlled
 
 Aim for:
 
 - fast openings, then narrowing
+- conclusion-led topic sentences
 - explanation before display
 - logic-driven transitions
+- ranked judgments when evidence allows
+- occasional plain sentences alongside compressed ones
 - calm but definite judgment
 - operational definitions
 - conclusions that sharpen questions instead of dissolving into vague optimism
@@ -222,6 +251,9 @@ Avoid:
 - decorative balance with little selection
 - repeating the same seed family across every section
 - repeated "not X but Y" turns as a default sentence shape
+- grand synthesis lines that sound authoritative but could sit in any review
+- reflexes such as "the evidence reveals...", "occupies a distinctive niche...", or "the field is rapidly evolving..."
+- constant em-dash or thereby/therefore scaffolding
 - relying on a later polish pass to fix weak structure
 
 Tables and figures should carry analytical load. Do not narrate document design in the main text.
@@ -250,10 +282,11 @@ Do not stop when the draft is merely complete. Check at least:
 4. **Citation coverage**: every retained paper appears at least once in the main text
 5. **Citation consistency**: every `[@key]` exists in `references.bib`
 6. **CSL consistency**: the YAML header points to a real CSL file
-7. **Opening diversity**: the introduction and major sections do not all begin with the same move
-8. **Paragraph control**: each paragraph solves one sub-problem and ends with a consequence, limit, or transition
-9. **Terminology control**: terms are stable, defined, and not inflated
-10. **Conclusion sharpness**: the ending closes the argument and names specific open questions
+7. **Seed fidelity**: the introduction and major section openings are anchored to distinct conclusion kernels, not generic framing
+8. **Opening diversity**: the introduction and major sections do not all begin with the same move
+9. **Paragraph control**: each paragraph solves one sub-problem and ends with a consequence, limit, or transition
+10. **Terminology control**: terms are stable, defined, and not inflated
+11. **Conclusion sharpness**: the ending ranks mature versus exploratory branches and names specific open questions
 
 If the problem is factual or structural, revise the draft. If the problem comes from the plan, revise `/plan` first.
 

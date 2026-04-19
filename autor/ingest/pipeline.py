@@ -78,6 +78,7 @@ class InboxCtx:
         inbox_dir: inbox 目录路径。
         papers_dir: 已入库论文目录路径。
         existing_dois: 已入库论文的 DOI → JSON 路径映射（用于去重）。
+        existing_pmids: 已入库论文的 PMID → JSON 路径映射（用于去重）。
         cfg: 全局配置。
         opts: 运行选项（dry_run, no_api, force 等）。
         pending_dir: 无 DOI 论文的待审目录。
@@ -91,6 +92,7 @@ class InboxCtx:
     inbox_dir: Path
     papers_dir: Path
     existing_dois: dict[str, Path]
+    existing_pmids: dict[str, Path] | None
     cfg: Config
     opts: dict[str, Any]
 
@@ -402,7 +404,7 @@ def step_dedup(ctx: InboxCtx) -> StepResult:
     if not ctx.opts.get("no_api"):
         _log.debug("querying APIs")
         ctx.meta = enrich_metadata(ctx.meta)
-        ui(f"DOI (after API): {ctx.meta.doi or 'none'}")
+        ui(f"DOI / PMID (after API): {ctx.meta.doi or 'none'} / {ctx.meta.pmid or 'none'}")
     else:
         ctx.meta.extraction_method = "local_only"
         _log.debug("skipping API query (offline mode)")
@@ -412,7 +414,22 @@ def step_dedup(ctx: InboxCtx) -> StepResult:
     if doi and doi.strip().lower() in ("null", "none", "n/a"):
         ctx.meta.doi = ""
         doi = ""
+    ctx.meta.pmid = _normalize_pmid(getattr(ctx.meta, "pmid", ""))
+    pmid = ctx.meta.pmid
     if not doi or not doi.strip():
+        if pmid and ctx.existing_pmids and pmid in ctx.existing_pmids:
+            existing_json = ctx.existing_pmids[pmid]
+            _move_to_pending(
+                ctx,
+                issue="duplicate",
+                message="PMID 与已入库论文重复，如需覆盖请手动处理",
+                extra={"duplicate_of": existing_json.parent.name, "pmid": pmid},
+            )
+            ctx.status = "duplicate"
+            return StepResult.FAIL
+        if pmid:
+            ui("无 DOI，但已识别 PMID，直接入库")
+            return StepResult.OK
         # No DOI -> check if patent (by publication number or detection)
         if _detect_patent(ctx):
             ctx.meta.paper_type = "patent"
@@ -478,6 +495,17 @@ def step_dedup(ctx: InboxCtx) -> StepResult:
                 message="DOI 与已入库论文重复，如需覆盖请手动处理",
                 extra={"duplicate_of": existing_json.parent.name, "doi": doi_key},
             )
+        ctx.status = "duplicate"
+        return StepResult.FAIL
+
+    if pmid and ctx.existing_pmids and pmid in ctx.existing_pmids:
+        existing_json = ctx.existing_pmids[pmid]
+        _move_to_pending(
+            ctx,
+            issue="duplicate",
+            message="PMID 与已入库论文重复，如需覆盖请手动处理",
+            extra={"duplicate_of": existing_json.parent.name, "pmid": pmid},
+        )
         ctx.status = "duplicate"
         return StepResult.FAIL
 
@@ -558,6 +586,9 @@ def step_ingest(ctx: InboxCtx) -> StepResult:
 
     if ctx.meta.doi and ctx.meta.doi.strip():
         ctx.existing_dois[ctx.meta.doi.lower().strip()] = new_json
+    if ctx.meta.pmid and ctx.meta.pmid.strip():
+        if ctx.existing_pmids is not None:
+            ctx.existing_pmids[ctx.meta.pmid.strip()] = new_json
     if ctx.meta.publication_number and ctx.meta.publication_number.strip():
         if ctx.existing_pub_nums is not None:
             ctx.existing_pub_nums[ctx.meta.publication_number.upper().strip()] = new_json
@@ -712,12 +743,13 @@ def step_embed(papers_dir: Path, cfg: Config, opts: dict) -> StepResult:
 
     db_path = cfg.index_db
     rebuild = opts.get("rebuild", False)
+    paper_ids = opts.get("paper_ids")
 
     if opts.get("dry_run"):
         _log.debug("would %s vectors: %s -> %s", "rebuild" if rebuild else "update", papers_dir, db_path)
         return StepResult.OK
 
-    count = build_vectors(papers_dir, db_path, rebuild=rebuild, cfg=cfg)
+    count = build_vectors(papers_dir, db_path, rebuild=rebuild, cfg=cfg, paper_ids=paper_ids)
     ui(f"Vector index done, {count} new.")
     return StepResult.OK
 
@@ -737,15 +769,51 @@ def step_index(papers_dir: Path, cfg: Config, opts: dict) -> StepResult:
 
     db_path = cfg.index_db
     rebuild = opts.get("rebuild", False)
+    paper_ids = opts.get("paper_ids")
 
     if opts.get("dry_run"):
         _log.debug("would %s index: %s -> %s", "rebuild" if rebuild else "update", papers_dir, db_path)
         return StepResult.OK
 
     ui(f"{'Rebuild' if rebuild else 'Update'} index: {papers_dir} -> {db_path}")
-    count = build_index(papers_dir, db_path, rebuild=rebuild)
+    count = build_index(papers_dir, db_path, rebuild=rebuild, paper_ids=paper_ids)
     ui(f"Index done, {count} papers.")
     return StepResult.OK
+
+
+def _run_papers_steps_for_json(json_path: Path, papers_steps: list[str], cfg: Config, opts: dict[str, Any]) -> None:
+    """Run papers-scope steps for a single ingested paper."""
+    if not papers_steps:
+        return
+    ui(f"\n{json_path.parent.name}")
+    for step_name in papers_steps:
+        with timer(f"pipeline.papers.{step_name}", "step") as t:
+            result = STEPS[step_name].fn(json_path, cfg, opts)
+        _log.debug("%s: %.1fs", step_name, t.elapsed)
+        if result == StepResult.SKIP:
+            _log.debug("%s skipped for %s", step_name, json_path.parent.name)
+            continue
+        if result == StepResult.FAIL:
+            _log.debug("%s failed for %s", step_name, json_path.parent.name)
+
+
+def _run_global_steps_for_paper(
+    paper_id: str,
+    papers_dir: Path,
+    global_steps: list[str],
+    cfg: Config,
+    opts: dict[str, Any],
+) -> None:
+    """Run global-scope steps in queue mode for one paper at a time."""
+    if not global_steps:
+        return
+    step_opts = dict(opts)
+    step_opts["paper_ids"] = {paper_id}
+    step_opts["rebuild"] = False
+    for step_name in global_steps:
+        with timer(f"pipeline.global.{step_name}", "step") as t:
+            STEPS[step_name].fn(papers_dir, cfg, step_opts)
+        _log.debug("%s[%s]: %.1fs", step_name, paper_id, t.elapsed)
 
 
 def step_refetch(json_path: Path, cfg: Config, opts: dict) -> StepResult:
@@ -839,12 +907,15 @@ def _process_inbox(
     papers_dir: Path,
     pending_dir: Path,
     existing_dois: dict[str, Path],
+    existing_pmids: dict[str, Path] | None,
     inbox_steps: list[str],
     cfg: Config,
     opts: dict[str, Any],
     dry_run: bool,
     ingested_jsons: list[Path],
     successfully_ingested: list[dict[str, str]],
+    papers_steps: list[str],
+    global_steps: list[str],
     *,
     is_thesis: bool = False,
     is_patent: bool = False,
@@ -857,12 +928,15 @@ def _process_inbox(
         papers_dir: 已入库论文目录。
         pending_dir: 待审目录。
         existing_dois: 已入库 DOI 映射（会被原地更新）。
+        existing_pmids: 已入库 PMID 映射（会被原地更新）。
         inbox_steps: inbox 作用域步骤名列表。
         cfg: 全局配置。
         opts: 运行选项。
         dry_run: 是否预览模式。
         ingested_jsons: 新入库的 JSON 路径列表（会被原地追加）。
         successfully_ingested: Newly persisted papers collected for workspace add.
+        papers_steps: 新入库样本后续需要执行的 papers 作用域步骤。
+        global_steps: 新入库样本后续需要执行的 global 作用域步骤。
         is_thesis: 是否为 thesis inbox（跳过 DOI 去重，标记 paper_type）。
         is_patent: 是否为 patent inbox（跳过 DOI 去重，用公开号去重）。
         existing_pub_nums: 已入库专利公开号映射（用于去重）。
@@ -895,14 +969,12 @@ def _process_inbox(
     md_only_count = sum(1 for e in entries.values() if not e["pdf"] and e["md"])
 
     needs_mineru = has_pdfs and "mineru" in inbox_steps
-    use_cloud_batch = False
     if needs_mineru and not dry_run:
         from autor.ingest.mineru import check_server
 
         if not check_server(cfg.ingest.mineru_endpoint):
             if cfg.resolved_mineru_api_key():
-                _log.debug("local MinerU unreachable, will use cloud API")
-                use_cloud_batch = True
+                _log.debug("local MinerU unreachable, will use cloud API in sequential mode")
             else:
                 _log.error("MinerU unreachable (local: %s, no cloud API key)", cfg.ingest.mineru_endpoint)
                 sys.exit(1)
@@ -916,77 +988,11 @@ def _process_inbox(
     if not is_thesis:
         ui(f"data/papers/ has {len(existing_dois)} papers (by DOI)")
 
-    # ---- Batch MinerU preflight (cloud only) ----
-    mineru_time = 0.0
-    long_pdf_stems: set[str] = set()  # stems of long PDFs excluded from batch
-    if use_cloud_batch and needs_mineru and not dry_run:
-        from autor.ingest.mineru import _get_pdf_page_count
-
-        chunk_limit = getattr(cfg.ingest, "chunk_page_limit", 100)
-        pdfs_to_convert = []
-        for e in entries.values():
-            pdf = e["pdf"]
-            if not pdf or (inbox_dir / (pdf.stem + ".md")).exists():
-                continue
-            # Exclude long PDFs from batch — they need chunk-based handling
-            pc = _get_pdf_page_count(pdf)
-            if pc > chunk_limit:
-                long_pdf_stems.add(pdf.stem)
-                _log.info("long PDF excluded from batch (%d pages): %s", pc, pdf.name)
-                continue
-            pdfs_to_convert.append(pdf)
-        if pdfs_to_convert:
-            from autor.ingest.mineru import ConvertOptions, convert_pdfs_cloud_batch
-
-            mineru_opts = ConvertOptions(
-                output_dir=inbox_dir,
-                backend=cfg.ingest.mineru_backend_local,
-                cloud_model_version=cfg.ingest.mineru_model_version_cloud,
-                lang=cfg.ingest.mineru_lang,
-                parse_method=cfg.ingest.mineru_parse_method,
-                formula_enable=cfg.ingest.mineru_enable_formula,
-                table_enable=cfg.ingest.mineru_enable_table,
-            )
-            t_batch_start = time.time()
-            batch_results = convert_pdfs_cloud_batch(
-                pdfs_to_convert,
-                mineru_opts,
-                api_key=cfg.resolved_mineru_api_key(),
-                cloud_url=cfg.ingest.mineru_cloud_url,
-                batch_size=cfg.ingest.mineru_batch_size,
-            )
-            mineru_time = time.time() - t_batch_start
-            # Move namespaced assets back to per-stem structure
-            for br in batch_results:
-                did = br.pdf_path.stem
-                # Rename <data_id>_images → images dir for this stem
-                namespaced_images = inbox_dir / f"{did}_images"
-                if namespaced_images.is_dir():
-                    target = inbox_dir / f"{did}_mineru_images"
-                    namespaced_images.rename(target)
-                if not br.success:
-                    _log.error("MinerU batch failed for %s: %s", br.pdf_path.name, br.error)
-            # Update entries with generated .md paths
-            for stem, e in entries.items():
-                md_check = inbox_dir / (stem + ".md")
-                if md_check.exists() and e["md"] is None:
-                    e["md"] = md_check
-
-    # ---- Per-file pipeline (remaining steps, or all steps if local MinerU) ----
-    # If batch MinerU was used, skip mineru step per-file (md already exists)
-    # BUT keep mineru for long PDFs that were excluded from batch
-    per_file_steps = inbox_steps
-    batch_skip_mineru = use_cloud_batch and "mineru" in per_file_steps
-    if batch_skip_mineru and not long_pdf_stems:
-        per_file_steps = [s for s in per_file_steps if s != "mineru"]
-
-    has_api = "dedup" in per_file_steps and not dry_run and not opts.get("no_api") and not is_thesis
+    has_api = "dedup" in inbox_steps and not dry_run and not opts.get("no_api") and not is_thesis
     api_delay = 2.0 if has_api else 0
 
     stats: dict[str, int] = {"ingested": 0, "duplicate": 0, "needs_review": 0, "failed": 0, "skipped": 0}
     step_times: dict[str, float] = {}
-    if mineru_time:
-        step_times["mineru"] = mineru_time
     sorted_entries = sorted(entries.items())
     for idx, (stem, paths) in enumerate(sorted_entries):
         office_path = paths.get("office")
@@ -1005,13 +1011,6 @@ def _process_inbox(
             file_type = "MD"
         ui(f"\n{label_prefix}[{idx + 1}/{len(sorted_entries)}] {file_type}: {file_label}")
 
-        # For long PDFs excluded from batch, keep mineru step
-        file_steps = per_file_steps
-        if batch_skip_mineru and long_pdf_stems and stem in long_pdf_stems:
-            file_steps = inbox_steps  # full steps including mineru
-        elif batch_skip_mineru and long_pdf_stems and stem not in long_pdf_stems:
-            file_steps = [s for s in per_file_steps if s != "mineru"]
-
         # Inject office_path for office-only entries (no PDF) so downstream steps can clean up the source file
         file_opts = dict(opts)
         if office_path and not paths["pdf"]:
@@ -1022,6 +1021,7 @@ def _process_inbox(
             inbox_dir=inbox_dir,
             papers_dir=papers_dir,
             existing_dois=existing_dois,
+            existing_pmids=existing_pmids,
             cfg=cfg,
             opts=file_opts,
             pending_dir=pending_dir,
@@ -1030,7 +1030,7 @@ def _process_inbox(
             is_patent=is_patent,
             existing_pub_nums=existing_pub_nums,
         )
-        for step_name in file_steps:
+        for step_name in inbox_steps:
             with timer(f"pipeline.inbox.{step_name}", "step") as t:
                 result = STEPS[step_name].fn(ctx)
             step_times[step_name] = step_times.get(step_name, 0) + t.elapsed
@@ -1046,6 +1046,8 @@ def _process_inbox(
             paper_uuid = str(getattr(ctx.meta, "id", "") or "")
             if paper_uuid:
                 successfully_ingested.append({"id": paper_uuid, "dir_name": ctx.ingested_json.parent.name})
+                _run_papers_steps_for_json(ctx.ingested_json, papers_steps, cfg, opts)
+                _run_global_steps_for_paper(paper_uuid, papers_dir, global_steps, cfg, opts)
 
         if api_delay and idx < len(sorted_entries) - 1:
             time.sleep(api_delay)
@@ -1140,7 +1142,7 @@ def run_pipeline(
 
     # ---- Inbox scope ----
     if inbox_steps:
-        existing_dois, existing_pub_nums = _collect_existing_ids(papers_dir)
+        existing_dois, existing_pmids, existing_pub_nums = _collect_existing_ids(papers_dir)
 
         # Process regular inbox
         _result = _process_inbox(
@@ -1148,12 +1150,15 @@ def run_pipeline(
             papers_dir,
             pending_dir,
             existing_dois,
+            existing_pmids,
             inbox_steps,
             cfg,
             opts,
             dry_run,
             ingested_jsons,
             successfully_ingested,
+            papers_steps,
+            global_steps,
             is_thesis=False,
             existing_pub_nums=existing_pub_nums,
         )
@@ -1166,12 +1171,15 @@ def run_pipeline(
                 papers_dir,
                 pending_dir,
                 existing_dois,
+                existing_pmids,
                 inbox_steps,
                 cfg,
                 opts,
                 dry_run,
                 ingested_jsons,
                 successfully_ingested,
+                papers_steps,
+                global_steps,
                 is_thesis=True,
                 existing_pub_nums=existing_pub_nums,
             )
@@ -1184,12 +1192,15 @@ def run_pipeline(
                 papers_dir,
                 pending_dir,
                 existing_dois,
+                existing_pmids,
                 inbox_steps,
                 cfg,
                 opts,
                 dry_run,
                 ingested_jsons,
                 successfully_ingested,
+                papers_steps,
+                global_steps,
                 is_patent=True,
                 existing_pub_nums=existing_pub_nums,
             )
@@ -1204,24 +1215,23 @@ def run_pipeline(
                 papers_dir,
                 pending_dir,
                 existing_dois,
+                existing_pmids,
                 doc_steps,
                 cfg,
                 opts,
                 dry_run,
                 ingested_jsons,
                 successfully_ingested,
+                papers_steps,
+                global_steps,
                 is_thesis=False,
                 existing_pub_nums=existing_pub_nums,
             )
 
     # ---- Papers scope ----
     if papers_steps:
-        if inbox_steps and ingested_jsons:
-            # Only enrich newly ingested papers, not the whole library
-            json_paths = sorted(ingested_jsons)
-            ui(f"\nRunning {', '.join(papers_steps)} on {len(json_paths)} new papers")
-        elif inbox_steps and not ingested_jsons:
-            # Inbox ran but nothing was ingested — skip papers scope
+        if inbox_steps:
+            # Queue mode already ran papers/global per ingested sample.
             json_paths = []
         else:
             # No inbox steps (e.g. `pipeline enrich`) — process all
@@ -1317,10 +1327,11 @@ def run_pipeline(
                 ui(f"  {'total':12s} {sum(step_times.values()):6.1f}s")
 
     # ---- Global scope ----
-    for step_name in global_steps:
-        with timer(f"pipeline.global.{step_name}", "step") as t:
-            STEPS[step_name].fn(papers_dir, cfg, opts)
-        _log.debug("%s: %.1fs", step_name, t.elapsed)
+    if not inbox_steps:
+        for step_name in global_steps:
+            with timer(f"pipeline.global.{step_name}", "step") as t:
+                STEPS[step_name].fn(papers_dir, cfg, opts)
+            _log.debug("%s: %.1fs", step_name, t.elapsed)
 
     if workspace and successfully_ingested:
         from autor import workspace as workspace_mod
@@ -1342,7 +1353,7 @@ def import_external(
 ) -> dict[str, int]:
     """从外部来源（Endnote 等）批量导入论文。
 
-    对每条记录运行 dedup + ingest，最后一次性 embed + index。
+    对每条记录按队列顺序运行 dedup + ingest，并在成功入库后立刻更新该样本的 embed + index。
     如提供 ``pdf_paths``（与 records 索引对齐），入库时自动复制
     PDF 到论文目录。
 
@@ -1358,12 +1369,10 @@ def import_external(
     """
     papers_dir = cfg.papers_dir
     pending_dir = cfg._root / "data" / "pending"
-    existing_dois, existing_pub_nums = _collect_existing_ids(papers_dir)
+    existing_dois, existing_pmids, existing_pub_nums = _collect_existing_ids(papers_dir)
 
     opts: dict[str, Any] = {"dry_run": dry_run, "no_api": no_api}
     stats: dict[str, int] = {"ingested": 0, "duplicate": 0, "needs_review": 0, "failed": 0, "skipped": 0}
-    ingested_jsons: list[Path] = []
-
     has_api = not no_api and not dry_run
 
     for idx, meta in enumerate(records):
@@ -1375,12 +1384,18 @@ def import_external(
             ui(f"DOI 重复，跳过: {meta.doi}")
             stats["duplicate"] += 1
             continue
+        pmid = _normalize_pmid(getattr(meta, "pmid", ""))
+        if pmid and pmid in existing_pmids:
+            ui(f"PMID 重复，跳过: {pmid}")
+            stats["duplicate"] += 1
+            continue
 
         ctx = InboxCtx(
             pdf_path=None,
             inbox_dir=cfg._root / "data" / "inbox",  # not actually used
             papers_dir=papers_dir,
             existing_dois=existing_dois,
+            existing_pmids=existing_pmids,
             existing_pub_nums=existing_pub_nums,
             cfg=cfg,
             opts=opts,
@@ -1403,14 +1418,15 @@ def import_external(
         final_status = ctx.status if ctx.status != "pending" else "skipped"
         stats[final_status] += 1
         if final_status == "ingested" and ctx.ingested_json:
-            ingested_jsons.append(ctx.ingested_json)
-
             # Copy PDF to paper directory if available
             pdf_src = pdf_paths[idx] if pdf_paths and idx < len(pdf_paths) else None
             if pdf_src and not dry_run:
                 paper_d = ctx.ingested_json.parent
                 shutil.copy2(str(pdf_src), str(paper_d / pdf_src.name))
                 ui(f"  PDF: {pdf_src.name}")
+            paper_uuid = str(getattr(ctx.meta, "id", "") or "")
+            if paper_uuid and not dry_run:
+                _run_global_steps_for_paper(paper_uuid, papers_dir, ["embed", "index"], cfg, {"dry_run": False})
 
         if has_api and idx < len(records) - 1:
             time.sleep(1.0)
@@ -1418,11 +1434,6 @@ def import_external(
     ui(
         f"\n导入完成: {stats['ingested']} 入库 | {stats['duplicate']} 重复 | {stats['needs_review']} 待审 | {stats['failed']} 失败"
     )
-
-    # Batch embed + index
-    if not dry_run and ingested_jsons:
-        step_embed(papers_dir, cfg, {"dry_run": False, "rebuild": False})
-        step_index(papers_dir, cfg, {"dry_run": False, "rebuild": False})
 
     return stats
 
@@ -1437,12 +1448,12 @@ def batch_convert_pdfs(
     *,
     enrich: bool = False,
 ) -> dict[str, int]:
-    """批量转换已入库论文的 PDF 为 paper.md，可选 enrich。
+    """按队列逐篇转换已入库论文的 PDF 为 paper.md，可选 enrich。
 
-    扫描 ``data/papers/`` 中有 PDF 无 paper.md 的论文，
-    云端模式使用 ``convert_pdfs_cloud_batch()`` 真正批量转换，
-    本地模式逐篇调用。转换后可选运行 toc + l3 + abstract backfill，
-    最后一次性 embed + index。
+    扫描 ``data/papers/`` 中有 PDF 无 ``paper.md`` 的论文，
+    无论本地还是云端都逐篇调用 MinerU，确保单样本独立参数、独立落盘，
+    避免批处理阶段长时间持有共享文件状态。每篇成功转换后立即执行
+    abstract backfill、可选 enrich，以及该样本的 embed + index。
 
     Args:
         cfg: 全局配置。
@@ -1479,118 +1490,41 @@ def batch_convert_pdfs(
 
     ui(f"\n开始批量转换 {len(to_convert)} 个 PDF...")
 
-    converted_dirs: list[Path] = []
+    for idx, (pdir, pdf_path) in enumerate(to_convert):
+        ui(f"[{idx + 1}/{len(to_convert)}] {pdir.name}")
+        mineru_opts = ConvertOptions(
+            api_url=cfg.ingest.mineru_endpoint,
+            output_dir=pdir,
+            backend=cfg.ingest.mineru_backend_local,
+            cloud_model_version=cfg.ingest.mineru_model_version_cloud,
+            lang=cfg.ingest.mineru_lang,
+            parse_method=cfg.ingest.mineru_parse_method,
+            formula_enable=cfg.ingest.mineru_enable_formula,
+            table_enable=cfg.ingest.mineru_enable_table,
+        )
+        if use_local:
+            from autor.ingest.mineru import convert_pdf
 
-    if use_local:
-        # Local MinerU: sequential single-file conversion
-        from autor.ingest.mineru import convert_pdf
-
-        for idx, (pdir, pdf_path) in enumerate(to_convert):
-            ui(f"[{idx + 1}/{len(to_convert)}] {pdir.name}")
-            mineru_opts = ConvertOptions(
-                api_url=cfg.ingest.mineru_endpoint,
-                output_dir=pdir,
-                backend=cfg.ingest.mineru_backend_local,
-                cloud_model_version=cfg.ingest.mineru_model_version_cloud,
-                lang=cfg.ingest.mineru_lang,
-                parse_method=cfg.ingest.mineru_parse_method,
-                formula_enable=cfg.ingest.mineru_enable_formula,
-                table_enable=cfg.ingest.mineru_enable_table,
-            )
             result = convert_pdf(pdf_path, mineru_opts)
-            if not result.success:
-                ui(f"  转换失败: {result.error}")
-                stats["failed"] += 1
-                continue
+        else:
+            from autor.ingest.mineru import convert_pdf_cloud
 
-            _postprocess_convert(pdir, pdf_path, result)
-            converted_dirs.append(pdir)
-            stats["converted"] += 1
-    else:
-        # Cloud MinerU: true batch conversion via convert_pdfs_cloud_batch
-        import tempfile
-
-        from autor.ingest.mineru import ConvertOptions, convert_pdfs_cloud_batch
-
-        # Collect PDF paths; detect stem collisions (batch API uses stem as data_id)
-        pdf_paths: list[Path] = []
-        dir_map: dict[str, Path] = {}
-        for pdir, pdf in to_convert:
-            if pdf.stem in dir_map:
-                _log.warning(
-                    "PDF stem collision: %s in %s and %s, skipping latter", pdf.stem, dir_map[pdf.stem].name, pdir.name
-                )
-                stats["skipped"] += 1
-                continue
-            dir_map[pdf.stem] = pdir
-            pdf_paths.append(pdf)
-
-        with tempfile.TemporaryDirectory(prefix="autor_batch_") as tmp:
-            tmp_dir = Path(tmp)
-            batch_opts = ConvertOptions(
-                output_dir=tmp_dir,
-                backend=cfg.ingest.mineru_backend_local,
-                cloud_model_version=cfg.ingest.mineru_model_version_cloud,
-                lang=cfg.ingest.mineru_lang,
-                parse_method=cfg.ingest.mineru_parse_method,
-                formula_enable=cfg.ingest.mineru_enable_formula,
-                table_enable=cfg.ingest.mineru_enable_table,
-            )
-
-            batch_results = convert_pdfs_cloud_batch(
-                pdf_paths,
-                batch_opts,
+            result = convert_pdf_cloud(
+                pdf_path,
+                mineru_opts,
                 api_key=api_key,
                 cloud_url=cfg.ingest.mineru_cloud_url,
-                batch_size=cfg.ingest.mineru_batch_size,
             )
+        if not result.success:
+            ui(f"  转换失败: {result.error}")
+            stats["failed"] += 1
+            continue
 
-            for br in batch_results:
-                stem = br.pdf_path.stem
-                pdir = dir_map.get(stem)
-                if pdir is None:
-                    _log.error("batch result stem %s not in dir_map", stem)
-                    stats["failed"] += 1
-                    continue
-
-                if not br.success:
-                    ui(f"  {pdir.name}: 转换失败: {br.error}")
-                    stats["failed"] += 1
-                    continue
-
-                # Move .md to paper_dir/paper.md
-                paper_md = pdir / "paper.md"
-                if br.md_path and br.md_path.exists():
-                    shutil.move(str(br.md_path), str(paper_md))
-
-                # Move namespaced images: tmp/<stem>_images → paper_dir/images
-                images_src = tmp_dir / f"{stem}_images"
-                if images_src.is_dir():
-                    images_dst = pdir / "images"
-                    if images_dst.exists():
-                        shutil.rmtree(str(images_dst))
-                    shutil.move(str(images_src), str(images_dst))
-                    # Fix image paths in markdown (data_id_images/ → images/)
-                    if paper_md.exists():
-                        md_text = paper_md.read_text(encoding="utf-8")
-                        fixed = md_text.replace(f"{stem}_images/", "images/")
-                        if fixed != md_text:
-                            paper_md.write_text(fixed, encoding="utf-8")
-
-                # Clean up source PDF (keep only markdown)
-                pdf_path = br.pdf_path
-                if pdf_path.exists() and pdf_path.parent == pdir and pdf_path.name != "paper.pdf":
-                    pdf_path.unlink()
-
-                ui(f"  {pdir.name}: OK")
-                converted_dirs.append(pdir)
-                stats["converted"] += 1
+        _postprocess_convert(pdir, pdf_path, result)
+        _postprocess_converted_paper(pdir, cfg, enrich=enrich)
+        stats["converted"] += 1
 
     ui(f"批量转换完成: {stats['converted']} 成功 / {stats['failed']} 失败 / {stats['skipped']} 跳过")
-
-    # Post-processing: abstract backfill + optional enrich (toc + l3)
-    if converted_dirs:
-        _batch_postprocess(converted_dirs, cfg, enrich=enrich)
 
     return stats
 
@@ -1621,21 +1555,18 @@ def _postprocess_convert(pdir: Path, pdf_path: Path, result) -> None:
         pdf_path.unlink()
 
 
-def _batch_postprocess(
-    converted_dirs: list[Path],
+def _postprocess_converted_paper(
+    pdir: Path,
     cfg: Config,
     *,
     enrich: bool = False,
 ) -> None:
-    """Abstract backfill + optional toc/l3 enrich + embed/index for converted papers."""
+    """Post-process one converted paper in queue mode."""
     from autor.papers import read_meta, write_meta
 
     # Abstract backfill
-    backfilled = 0
-    for pdir in converted_dirs:
-        paper_md = pdir / "paper.md"
-        if not paper_md.exists():
-            continue
+    paper_md = pdir / "paper.md"
+    if paper_md.exists():
         try:
             data = read_meta(pdir)
             if not data.get("abstract"):
@@ -1645,48 +1576,56 @@ def _batch_postprocess(
                 if abstract:
                     data["abstract"] = abstract
                     write_meta(pdir, data)
-                    backfilled += 1
+                    ui(f"  Abstract 已补全: {pdir.name}")
         except (ValueError, FileNotFoundError) as e:
             _log.debug("failed to backfill abstract for %s: %s", pdir.name, e)
-    if backfilled:
-        ui(f"Abstract 已补全: {backfilled} 篇")
 
     # Enrich: toc + l3
     if enrich:
-        enriched = 0
-        failed = 0
         opts: dict[str, Any] = {"dry_run": False, "force": False, "max_retries": 2}
-        for pdir in converted_dirs:
-            json_path = pdir / "meta.json"
-            if not json_path.exists():
-                continue
+        json_path = pdir / "meta.json"
+        if json_path.exists():
             ui(f"  enrich: {pdir.name}")
-            toc_res = step_toc(json_path, cfg, opts)
-            l3_res = step_l3(json_path, cfg, opts)
-            if toc_res == StepResult.FAIL or l3_res == StepResult.FAIL:
-                failed += 1
-            else:
-                enriched += 1
-        ui(f"Enrich 完成: {enriched} ok | {failed} failed")
+            step_toc(json_path, cfg, opts)
+            step_l3(json_path, cfg, opts)
 
-    # Re-embed + re-index once
-    step_embed(cfg.papers_dir, cfg, {"dry_run": False, "rebuild": False})
-    step_index(cfg.papers_dir, cfg, {"dry_run": False, "rebuild": False})
+    try:
+        meta = read_meta(pdir)
+    except (ValueError, FileNotFoundError) as e:
+        _log.debug("failed to reload meta for vector/index update %s: %s", pdir.name, e)
+        return
+    paper_id = str(meta.get("id") or "")
+    if not paper_id:
+        return
+    _run_global_steps_for_paper(paper_id, cfg.papers_dir, ["embed", "index"], cfg, {"dry_run": False})
 
 
-def _collect_existing_ids(papers_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
-    """Collect existing DOIs and patent publication numbers for dedup.
+def _normalize_pmid(value: str | None) -> str:
+    """Normalize PubMed IDs from raw metadata for dedup and registry updates."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    url_match = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", text, re.IGNORECASE)
+    if url_match:
+        return url_match.group(1)
+    text = re.sub(r"^pmid:\s*", "", text, flags=re.IGNORECASE).strip()
+    return text if text.isdigit() else ""
+
+
+def _collect_existing_ids(papers_dir: Path) -> tuple[dict[str, Path], dict[str, Path], dict[str, Path]]:
+    """Collect existing DOIs, PMIDs, and patent publication numbers for dedup.
 
     Returns:
-        (dois, pub_nums) — DOIs map lowercase key → json_path,
-        pub_nums map uppercase key → json_path.
+        ``(dois, pmids, pub_nums)`` — DOI map lowercase key → json_path,
+        PMID map digit string → json_path, and pub_nums map uppercase key → json_path.
     """
     from autor.papers import iter_paper_dirs
 
     dois: dict[str, Path] = {}
+    pmids: dict[str, Path] = {}
     pub_nums: dict[str, Path] = {}
     if not papers_dir.exists():
-        return dois, pub_nums
+        return dois, pmids, pub_nums
     for pdir in iter_paper_dirs(papers_dir):
         json_path = pdir / "meta.json"
         try:
@@ -1694,17 +1633,21 @@ def _collect_existing_ids(papers_dir: Path) -> tuple[dict[str, Path], dict[str, 
             doi = data.get("doi") or (data.get("ids") or {}).get("doi")
             if doi and doi.strip():
                 dois[doi.lower().strip()] = json_path
+            pmid = data.get("pmid") or (data.get("ids") or {}).get("pmid")
+            pmid_norm = _normalize_pmid(pmid)
+            if pmid_norm:
+                pmids[pmid_norm] = json_path
             pub_num = (data.get("ids") or {}).get("patent_publication_number", "")
             if pub_num and pub_num.strip():
                 pub_nums[pub_num.upper().strip()] = json_path
         except Exception as e:
             _log.debug("failed to read %s: %s", json_path.name, e)
-    return dois, pub_nums
+    return dois, pmids, pub_nums
 
 
 def _collect_existing_dois(papers_dir: Path) -> dict[str, Path]:
     """Backward-compatible wrapper returning only DOIs."""
-    dois, _ = _collect_existing_ids(papers_dir)
+    dois, _, _ = _collect_existing_ids(papers_dir)
     return dois
 
 
@@ -2047,15 +1990,34 @@ _registry_migrated: set[Path] = set()
 
 
 def _ensure_registry_schema(conn, db_path: Path) -> None:
-    """Run publication_number column migration once per db_path per process."""
+    """Run registry column/index migration once per db_path per process."""
     import sqlite3
 
     if db_path in _registry_migrated:
         return
     try:
+        conn.execute("SELECT pmid FROM papers_registry LIMIT 0")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE papers_registry ADD COLUMN pmid TEXT")
+    try:
         conn.execute("SELECT publication_number FROM papers_registry LIMIT 0")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE papers_registry ADD COLUMN publication_number TEXT")
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_pmid "
+            "ON papers_registry(pmid) "
+            "WHERE pmid IS NOT NULL AND pmid != ''"
+        )
+    except sqlite3.IntegrityError:
+        _log.warning(
+            "Duplicate pmid values found; creating non-unique index. Run 'autor index' to rebuild."
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_registry_pmid_nonunique "
+            "ON papers_registry(pmid) "
+            "WHERE pmid IS NOT NULL AND pmid != ''"
+        )
     # Ensure UNIQUE partial index exists (matches index.py schema).
     # Pre-migration data may contain duplicates, so catch IntegrityError
     # and fall back to a non-unique index rather than silently breaking.
@@ -2074,6 +2036,14 @@ def _ensure_registry_schema(conn, db_path: Path) -> None:
             "ON papers_registry(publication_number) "
             "WHERE publication_number IS NOT NULL AND publication_number != ''"
         )
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_registry_title_exact "
+            "ON papers_registry(LOWER(TRIM(title))) "
+            "WHERE title IS NOT NULL AND title != ''"
+        )
+    except sqlite3.OperationalError:
+        pass
     _registry_migrated.add(db_path)
 
 
@@ -2089,59 +2059,60 @@ def _update_registry(cfg, meta, dir_name: str) -> None:
             _ensure_registry_schema(conn, db_path)
             pub_num = (getattr(meta, "publication_number", "") or "").upper().strip()
             doi_norm = (meta.doi or "").lower().strip()
-            try:
-                conn.execute(
-                    """INSERT INTO papers_registry
-                       (id, dir_name, title, doi, publication_number, year, first_author)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
+            pmid_norm = _normalize_pmid(getattr(meta, "pmid", ""))
+            record = {
+                "id": meta.id,
+                "dir_name": dir_name,
+                "title": meta.title or "",
+                "doi": doi_norm,
+                "pmid": pmid_norm,
+                "publication_number": pub_num,
+                "year": meta.year,
+                "first_author": meta.first_author_lastname or "",
+            }
+            sql = """INSERT INTO papers_registry
+                       (id, dir_name, title, doi, pmid, publication_number, year, first_author)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(id) DO UPDATE SET
                            dir_name=excluded.dir_name,
                            title=excluded.title,
                            doi=excluded.doi,
+                           pmid=excluded.pmid,
                            publication_number=excluded.publication_number,
                            year=excluded.year,
-                           first_author=excluded.first_author""",
-                    (
-                        meta.id,
-                        dir_name,
-                        meta.title or "",
-                        doi_norm,
-                        pub_num,
-                        meta.year,
-                        meta.first_author_lastname or "",
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                err_msg = str(exc).lower()
-                if "publication_number" in err_msg and pub_num:
-                    _log.warning(
-                        "publication_number %r for %s conflicts; storing without it",
-                        pub_num,
-                        meta.id,
-                    )
+                           first_author=excluded.first_author"""
+            while True:
+                try:
                     conn.execute(
-                        """INSERT INTO papers_registry
-                           (id, dir_name, title, doi, publication_number, year, first_author)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(id) DO UPDATE SET
-                               dir_name=excluded.dir_name,
-                               title=excluded.title,
-                               doi=excluded.doi,
-                               publication_number=excluded.publication_number,
-                               year=excluded.year,
-                               first_author=excluded.first_author""",
+                        sql,
                         (
-                            meta.id,
-                            dir_name,
-                            meta.title or "",
-                            doi_norm,
-                            "",
-                            meta.year,
-                            meta.first_author_lastname or "",
+                            record["id"],
+                            record["dir_name"],
+                            record["title"],
+                            record["doi"],
+                            record["pmid"],
+                            record["publication_number"],
+                            record["year"],
+                            record["first_author"],
                         ),
                     )
-                else:
+                    break
+                except sqlite3.IntegrityError as exc:
+                    err_msg = str(exc).lower()
+                    if "pmid" in err_msg and record["pmid"]:
+                        _log.warning("pmid %r for %s conflicts; storing without it", record["pmid"], meta.id)
+                        record["pmid"] = ""
+                        continue
+                    if "publication_number" in err_msg and record["publication_number"]:
+                        _log.warning(
+                            "publication_number %r for %s conflicts; storing without it",
+                            record["publication_number"],
+                            meta.id,
+                        )
+                        record["publication_number"] = ""
+                        continue
                     _log.warning("IntegrityError in _update_registry for %s: %s", meta.id, exc)
+                    break
     except Exception as e:
         _log.debug("failed to update papers_registry: %s", e)
 

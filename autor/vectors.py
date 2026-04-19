@@ -731,7 +731,14 @@ def _aggregate_paper_vector(chunk_vecs: list[list[float]]) -> list[float]:
 # ============================================================================
 
 
-def build_vectors(papers_dir: Path, db_path: Path, rebuild: bool = False, cfg: Config | None = None) -> int:
+def build_vectors(
+    papers_dir: Path,
+    db_path: Path,
+    rebuild: bool = False,
+    cfg: Config | None = None,
+    *,
+    paper_ids: set[str] | None = None,
+) -> int:
     """为主库全文分块生成语义向量，并维护兼容的 paper-level 向量。
 
     Args:
@@ -739,6 +746,7 @@ def build_vectors(papers_dir: Path, db_path: Path, rebuild: bool = False, cfg: C
         db_path: SQLite 数据库路径，不存在时自动创建。
         rebuild: 为 ``True`` 时清空旧向量后重建。
         cfg: 可选的 :class:`~autor.config.Config`，用于读取模型/设备配置。
+        paper_ids: 可选；仅为指定 UUID 的论文增量生成向量。``rebuild=True`` 时忽略。
 
     Returns:
         本次新写入的 chunk 向量数量。
@@ -774,6 +782,7 @@ def build_vectors(papers_dir: Path, db_path: Path, rebuild: bool = False, cfg: C
         embed_batch_size = 1024
         can_append_faiss = not pipeline_reset
         processed_papers = 0
+        target_ids = None if rebuild or paper_ids is None else set(paper_ids)
         for pdir in iter_paper_dirs(papers_dir):
             try:
                 meta = read_meta(pdir)
@@ -781,6 +790,8 @@ def build_vectors(papers_dir: Path, db_path: Path, rebuild: bool = False, cfg: C
                 _log.debug("failed to read meta.json in %s: %s", pdir.name, e)
                 continue
             paper_id = meta.get("id") or pdir.name
+            if target_ids is not None and paper_id not in target_ids:
+                continue
 
             title = (meta.get("title") or "").strip()
             abstract = (meta.get("abstract") or "").strip()

@@ -302,6 +302,40 @@ def test_build_vectors_writes_chunk_rows_and_aggregated_paper_vector(tmp_path, m
     assert len(paper_rows) == 1
 
 
+def test_build_vectors_can_limit_updates_to_target_paper_ids(tmp_path, monkeypatch, fake_faiss):
+    papers_dir, paper_id, _dir_name = _create_medical_paper(tmp_path)
+    other_dir = papers_dir / "Other-2026-Study"
+    other_dir.mkdir()
+    (other_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "id": "paper-other-2",
+                "title": "Control cohort study",
+                "authors": ["A. Other"],
+                "year": 2026,
+                "journal": "Control Journal",
+                "abstract": "Control abstract.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (other_dir / "paper.md").write_text("# Control cohort study\n\nBaseline content.", encoding="utf-8")
+    db_path = tmp_path / "index.db"
+
+    monkeypatch.setattr(vectors, "_embed_batch", _fake_embed_batch)
+
+    count = vectors.build_vectors(papers_dir, db_path, rebuild=False, paper_ids={paper_id})
+
+    conn = sqlite3.connect(db_path)
+    try:
+        paper_rows = conn.execute("SELECT paper_id FROM paper_vectors ORDER BY paper_id").fetchall()
+    finally:
+        conn.close()
+
+    assert count == 5
+    assert paper_rows == [(paper_id,)]
+
+
 def test_build_vectors_clears_legacy_paper_vectors_on_pipeline_upgrade(tmp_path, monkeypatch, fake_faiss):
     papers_dir, paper_id, _dir_name = _create_medical_paper(tmp_path)
     db_path = tmp_path / "index.db"

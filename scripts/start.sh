@@ -9,11 +9,12 @@ MINERU_PORT="${AUTOR_MINERU_PORT:-8000}"
 AUTODOWNLOAD_PORT="${AUTOR_AUTODOWNLOAD_PORT:-8001}"
 MINERU_PID_FILE="$RUN_DIR/mineru.pid"
 MINERU_LOG_FILE="$RUN_DIR/mineru.log"
+MINERU_MODULE="mineru.cli.fast_api"
 
 mkdir -p "$RUN_DIR"
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-  echo "未找到 autor 虚拟环境: $VENV_DIR" >&2
+  echo "autor virtual environment not found: $VENV_DIR" >&2
   exit 1
 fi
 
@@ -41,13 +42,13 @@ wait_for_port() {
 
   for ((i = 0; i < retries; i += 1)); do
     if port_open "$port"; then
-      echo "$name 已就绪: 127.0.0.1:$port"
+      echo "$name is ready: 127.0.0.1:$port"
       return 0
     fi
     sleep "$sleep_seconds"
   done
 
-  echo "$name 启动超时: 127.0.0.1:$port" >&2
+  echo "$name timed out while starting: 127.0.0.1:$port" >&2
   return 1
 }
 
@@ -85,58 +86,72 @@ resolve_windows_shell() {
 
 start_mineru() {
   if port_open "$MINERU_PORT"; then
-    echo "MinerU 已在运行: 127.0.0.1:$MINERU_PORT"
+    echo "MinerU is already running: 127.0.0.1:$MINERU_PORT"
     return 0
   fi
 
-  echo "启动 MinerU 本地服务..."
+  if ! "$VENV_DIR/bin/python" -c "import $MINERU_MODULE" >/dev/null 2>&1; then
+    echo "MinerU module not importable in $VENV_DIR: $MINERU_MODULE" >&2
+    return 1
+  fi
+
+  echo "Starting local MinerU service..."
   nohup env \
     MINERU_MODEL_SOURCE="${MINERU_MODEL_SOURCE:-modelscope}" \
-    "$VENV_DIR/bin/mineru-api" \
+    "$VENV_DIR/bin/python" \
+    -m "$MINERU_MODULE" \
     --host 127.0.0.1 \
     --port "$MINERU_PORT" \
     >"$MINERU_LOG_FILE" 2>&1 &
 
   local pid=$!
   echo "$pid" >"$MINERU_PID_FILE"
+
+  sleep 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "MinerU exited before becoming ready. Check $MINERU_LOG_FILE for details." >&2
+    tail -n 20 "$MINERU_LOG_FILE" >&2 || true
+    return 1
+  fi
+
   wait_for_port "$MINERU_PORT" "MinerU"
 }
 
 start_autodownload() {
   if port_open "$AUTODOWNLOAD_PORT"; then
-    echo "AutoDownload 已在运行: 127.0.0.1:$AUTODOWNLOAD_PORT"
+    echo "Records service is already running: 127.0.0.1:$AUTODOWNLOAD_PORT"
     return 0
   fi
 
   local windows_shell
   windows_shell="$(resolve_windows_shell)" || {
-    echo "未找到可用的 Windows PowerShell，可设置 AUTOR_WINDOWS_POWERSHELL 后重试。" >&2
+    echo "No usable Windows PowerShell was found. Set AUTOR_WINDOWS_POWERSHELL and retry." >&2
     return 1
   }
 
   local win_script
   win_script="$(wslpath -w "$ROOT_DIR/scripts/windows/start.ps1")"
 
-  echo "启动 Windows 侧 AutoDownload..."
+  echo "Starting the Records service on Windows..."
   "$windows_shell" \
     -NoProfile \
     -ExecutionPolicy Bypass \
     -File "$win_script"
 
-  wait_for_port "$AUTODOWNLOAD_PORT" "AutoDownload"
+  wait_for_port "$AUTODOWNLOAD_PORT" "Records service"
 }
 
-echo "使用虚拟环境: $VENV_DIR"
+echo "Using virtual environment: $VENV_DIR"
 start_mineru
 start_autodownload
 
 cat <<EOF
-服务已启动。
+Services are up.
 
 - MinerU:        http://127.0.0.1:$MINERU_PORT
-- AutoDownload:  http://127.0.0.1:$AUTODOWNLOAD_PORT
+- Records API:   http://127.0.0.1:$AUTODOWNLOAD_PORT
 
-说明:
-- MCP 不作为后台服务启动；它使用 stdio 传输，应由客户端按需拉起。
-- 供 MCP 客户端调用的启动命令见: scripts/run-mcp.sh
+Notes:
+- MCP is not started as a background service; it uses stdio transport and should be launched by the client on demand.
+- The recommended launcher for MCP clients is: scripts/run-mcp.sh
 EOF

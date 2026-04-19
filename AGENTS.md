@@ -46,8 +46,8 @@ The above are baseline capabilities. Feel free to combine CLI tools and the codi
 |--------|----------|
 | `ingest/mineru.py` | PDF → MinerU Markdown (cloud API / local) |
 | `ingest/extractor.py` | Metadata extraction (regex / auto / robust / llm — 4 modes) |
-| `ingest/metadata/` | API query completion (Crossref / S2 / OpenAlex), JSON output, file renaming |
-| `ingest/pipeline.py` | Composable ingest pipeline (DOI dedup + pending + external import batch conversion) |
+| `ingest/metadata/` | API query completion (Crossref / S2 / OpenAlex / PubMed), JSON output, file renaming |
+| `ingest/pipeline.py` | Composable ingest pipeline (DOI / PMID dedup + pending + external import batch conversion) |
 | `index.py` | FTS5 full-text search + papers_registry + citations graph |
 | `vectors.py` | Qwen3 semantic vectors + FAISS incremental indexing |
 | `topics.py` | BERTopic topic modeling + 6 HTML visualizations |
@@ -58,7 +58,7 @@ The above are baseline capabilities. Feel free to combine CLI tools and the codi
 | `audit.py` | Data quality audit + repair |
 | `sources/` | Data source adapters (local / endnote / zotero) |
 | `cli.py` | Full CLI entry point |
-| `mcp_server.py` | MCP server (31 tools) |
+| `mcp_server.py` | MCP server (32 tools) |
 | `setup.py` | Environment detection + setup wizard |
 | `metrics.py` | LLM token usage + API timing |
 
@@ -107,7 +107,7 @@ import-endnote / import-zotero — External reference manager import (full pipel
 
 | Level | Content | Source |
 |-------|---------|--------|
-| L1 | title, authors, year, journal, doi, volume, issue, pages, publisher, issn | JSON file |
+| L1 | title, authors, year, journal, doi, pmid, volume, issue, pages, publisher, issn | JSON file |
 | L2 | abstract | JSON field |
 | L3 | conclusion section | JSON field (requires running enrich-l3 first) |
 | L4 | full markdown | Read .md directly |
@@ -126,7 +126,7 @@ data/papers/
 
 Each paper has its own directory. UUID serves as the internal unique identifier (written to `meta.json["id"]`, never changes).
 Directory name is human-readable `Author-Year-Title`; rename only changes the directory name.
-`data/index.db` contains a `papers_registry` table providing UUID ↔ DOI ↔ dir_name bidirectional lookup.
+`data/index.db` contains a `papers_registry` table providing UUID ↔ DOI/PMID ↔ dir_name bidirectional lookup.
 
 ### data/inbox/ Directory
 
@@ -233,9 +233,7 @@ Project overview:
 - `autor-overview` — Project overview (how to use the software / what skills exist / what other features are available / what to do next)
 
 Literature acquisition:
-- `autodownload-overview` — AutoDownload integration overview and REST-first acquisition workflow
-- `autodownload-outline` — Build a new workspace from a topic or outline via AutoDownload + autor
-- `autodownload-expand` — Expand an existing workspace by finding and ingesting missing papers
+- `autodownload` — Use the Records-backed AutoDownload service for PubMed retrieval, PMID resolution, and PDF download in support of autor workspaces
 
 Knowledge base management:
 - `search` — Literature search (keyword / semantic / author / hybrid retrieval / top-cited ranking)
@@ -293,7 +291,7 @@ When operating from bash/WSL, prefer the repository scripts instead of ad-hoc se
   - `source .venv/bin/activate`
 2. Start long-running local services with `scripts/start.sh`:
   - Starts local MinerU on `127.0.0.1:8000`
-  - Starts AutoDownload on Windows side, default `127.0.0.1:8001`
+  - Starts the Records-backed AutoDownload service on the Windows side, default `127.0.0.1:8001`
 3. Start MCP for a client with `scripts/run-mcp.sh`:
   - `autor-mcp` uses **stdio**, not an HTTP daemon
   - Do **not** daemonize MCP in `start.sh` / `stop.sh`
@@ -305,7 +303,8 @@ Useful environment variables for bash sessions:
 - `AUTOR_VENV`: override virtualenv path, default `.venv`
 - `AUTOR_WINDOWS_POWERSHELL`: explicit Windows PowerShell path if WSL cannot find `powershell.exe` / `pwsh.exe`
 - `AUTOR_MINERU_PORT`: override MinerU port, default `8000`
-- `AUTOR_AUTODOWNLOAD_PORT`: override AutoDownload port, default `8001`
+- `AUTOR_AUTODOWNLOAD_PORT`: override the Records service port, default `8001`
+- `AUTOR_AUTODOWNLOAD_WIN_DIR`: override the Windows-side Records repo path, default `F:\Records` (`/mnt/f/Records` from WSL)
 
 API key notes:
 - **LLM key** (DeepSeek / OpenAI): Metadata extraction + content enrichment. Without it, falls back to pure regex; enrich unavailable

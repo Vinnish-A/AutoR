@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from autor.index import build_index, lookup_paper, search
+from autor.index import build_index, find_exact_matches, lookup_paper, search
 
 
 class TestBuildAndSearch:
@@ -87,9 +87,18 @@ class TestBuildAndSearch:
             ).fetchall()
         assert [row[0] for row in rows] == ["10.1000/classic", "10.1000/second"]
 
+    def test_build_index_can_limit_updates_to_target_paper_ids(self, tmp_papers, tmp_db):
+        count = build_index(tmp_papers, tmp_db, paper_ids={"aaaa-1111"})
+
+        with sqlite3.connect(tmp_db) as conn:
+            rows = conn.execute("SELECT paper_id FROM papers ORDER BY paper_id").fetchall()
+
+        assert count == 1
+        assert rows == [("aaaa-1111",)]
+
 
 class TestLookupPaper:
-    """lookup_paper contract: find by UUID, dir_name, DOI, or publication_number."""
+    """lookup_paper contract: find by UUID, dir_name, DOI, PMID, or publication_number."""
 
     def test_lookup_by_uuid(self, tmp_papers, tmp_db):
         build_index(tmp_papers, tmp_db)
@@ -102,6 +111,12 @@ class TestLookupPaper:
         result = lookup_paper(tmp_db, "10.1234/jfm.2023.001")
         assert result is not None
         assert result["doi"] == "10.1234/jfm.2023.001"
+
+    def test_lookup_by_pmid(self, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        result = lookup_paper(tmp_db, "12345678")
+        assert result is not None
+        assert result["pmid"] == "12345678"
 
     def test_lookup_by_doi_is_backward_compatible_with_legacy_uppercase_registry(self, tmp_papers, tmp_db):
         build_index(tmp_papers, tmp_db)
@@ -143,6 +158,97 @@ class TestLookupPaper:
         assert result is not None
         assert result["id"] == "patent-001"
 
+    def test_lookup_numeric_identifier_prefers_publication_number_over_pmid(self, tmp_path, tmp_db):
+        """Numeric patent publication numbers must remain resolvable when PMID collides."""
+        papers_dir = tmp_path / "papers"
+
+        paper_dir = papers_dir / "Smith-2023-PMID"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "id": "paper-001",
+                    "title": "A PubMed indexed paper",
+                    "authors": ["John Smith"],
+                    "first_author_lastname": "Smith",
+                    "year": 2023,
+                    "journal": "Journal of Test Cases",
+                    "doi": "10.1234/test.paper",
+                    "pmid": "12345678",
+                    "abstract": "Paper abstract.",
+                    "paper_type": "journal-article",
+                    "ids": {"pmid": "12345678"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (paper_dir / "paper.md").write_text("# Paper\n\nContent.", encoding="utf-8")
+
+        patent_dir = papers_dir / "Inventor-2024-Patent"
+        patent_dir.mkdir(parents=True)
+        (patent_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "id": "patent-001",
+                    "title": "A numeric publication number patent",
+                    "authors": ["Inventor"],
+                    "first_author_lastname": "Inventor",
+                    "year": 2024,
+                    "journal": "",
+                    "doi": "",
+                    "abstract": "Patent abstract.",
+                    "paper_type": "patent",
+                    "ids": {"patent_publication_number": "12345678"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (patent_dir / "paper.md").write_text("# Patent\n\nContent.", encoding="utf-8")
+
+        build_index(papers_dir, tmp_db)
+
+        patent = lookup_paper(tmp_db, "12345678")
+        assert patent is not None
+        assert patent["id"] == "patent-001"
+
+        paper = lookup_paper(tmp_db, "PMID:12345678")
+        assert paper is not None
+        assert paper["id"] == "paper-001"
+
     def test_lookup_nonexistent_returns_none(self, tmp_papers, tmp_db):
         build_index(tmp_papers, tmp_db)
         assert lookup_paper(tmp_db, "nonexistent-id") is None
+
+
+class TestFindExactMatches:
+    def test_exact_matches_group_by_field(self, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        matches = find_exact_matches(
+            tmp_db,
+            doi="10.1234/jfm.2023.001",
+            pmid="12345678",
+            title="Turbulence modeling in boundary layers",
+        )
+        assert [row["id"] for row in matches["records"]] == ["aaaa-1111"]
+        assert [row["id"] for row in matches["doi"]] == ["aaaa-1111"]
+        assert [row["id"] for row in matches["pmid"]] == ["aaaa-1111"]
+        assert [row["id"] for row in matches["title"]] == ["aaaa-1111"]
+
+    def test_exact_matches_respect_paper_id_scope(self, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        matches = find_exact_matches(
+            tmp_db,
+            doi="10.1234/jfm.2023.001",
+            paper_ids={"bbbb-2222"},
+        )
+        assert matches["records"] == []
+
+    def test_exact_matches_requires_built_index(self, tmp_db):
+        try:
+            find_exact_matches(tmp_db, doi="10.1234/missing.index")
+        except FileNotFoundError as exc:
+            assert "Index not built" in str(exc)
+        else:
+            raise AssertionError("find_exact_matches should fail when index.db is missing")

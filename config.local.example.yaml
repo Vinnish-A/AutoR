@@ -19,6 +19,11 @@ ingest:
   s2_api_key: "" # Semantic Scholar API key — higher rate limits S2 API 密钥（提升限速）
                # Apply at: https://www.semanticscholar.org/product/api#api-key
                # 申请地址：https://www.semanticscholar.org/product/api#api-key
+  ncbi_api_key: "" # NCBI E-utilities / PubMed API key — higher PubMed rate limits
+                  # 申请地址：https://www.ncbi.nlm.nih.gov/account/settings/
+
+plot:
+  api_key: ""
 
 # Zotero integration (optional) Zotero 集成（可选）
 # API key: https://www.zotero.org/settings/keys

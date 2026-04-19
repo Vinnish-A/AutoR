@@ -9,7 +9,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![MCP Tools](https://img.shields.io/badge/MCP_Tools-31-green.svg)](autor/mcp_server.py)
+[![MCP Tools](https://img.shields.io/badge/MCP_Tools-32-green.svg)](autor/mcp_server.py)
 
 </div>
 
@@ -47,13 +47,13 @@ If you use this repository from WSL, you can run:
 ./scripts/run-mcp.sh
 ```
 
-- `start.sh`: starts local MinerU and proxies to AutoDownload on the Windows side (default `F:\AutoDownload`, port `8001`)
-- `stop.sh`: stops MinerU and AutoDownload
+- `start.sh`: starts local MinerU and the Records-backed AutoDownload service on the Windows side (default repo path `F:\Records`, port `8001`)
+- `stop.sh`: stops MinerU and the Records-backed AutoDownload service
 - `run-mcp.sh`: launches `autor-mcp` in the foreground
 
 Note: `autor-mcp` uses `stdio` transport and is not meant to stay alive in the background like an HTTP service. In practice, it works best when your MCP client invokes `scripts/run-mcp.sh` directly.
 
-WSL will try to detect Windows PowerShell automatically. If your environment is unusual, set `AUTOR_WINDOWS_POWERSHELL` explicitly. To change the Windows-side AutoDownload path, set `AUTOR_AUTODOWNLOAD_WIN_DIR`.
+WSL will try to detect Windows PowerShell automatically. If your environment is unusual, set `AUTOR_WINDOWS_POWERSHELL` explicitly. To change the Windows-side Records repo path, set `AUTOR_AUTODOWNLOAD_WIN_DIR` (default `F:\Records`, seen from WSL as `/mnt/f/Records`).
 
 ## Core Features
 
@@ -72,7 +72,7 @@ WSL will try to detect Windows PowerShell automatically. If your environment is 
 | **Office Documents** | Inspect and ingest DOCX/PPTX/XLSX | `autor document inspect` checks layout and content; Office files can also flow through the document inbox |
 | **Research Insights** | Learn from your own workflow | `autor insights` surfaces hot queries, frequently read papers, reading trends, and semantic neighbors |
 | **Academic Writing** | AI-assisted drafting | Literature reviews, paper sections, reviewer-driven revision, citation verification, reviewer responses, and research-gap analysis — every citation remains traceable to your own library |
-| **MCP Server** | 31 tools | Works with Claude Desktop, Cursor, and other MCP clients |
+| **MCP Server** | 32 tools | Works with Claude Desktop, Cursor, and other MCP clients |
 
 ## More Than Paper Management
 
@@ -98,7 +98,9 @@ autor is designed to be **agent-agnostic**. It already ships with ready-to-use i
 | [GitHub Copilot](https://github.com/features/copilot) | Instruction wrapper | `.github/copilot-instructions.md` |
 | [Codex](https://openai.com/codex) / OpenClaw | Full instructions + skills | `AGENTS.md` + `.agents/skills/` |
 
-The **MCP server** (`autor-mcp`, 31 tools) works with any MCP-compatible client. Skills follow the open [AgentSkills.io](https://agentskills.io) standard — `.agents/skills/` and `.claude/skills/` mirror the canonical `.github/skills/` tree for easier cross-agent discovery.
+The **MCP server** (`autor-mcp`, 32 tools) works with any MCP-compatible client. Skills follow the open [AgentSkills.io](https://agentskills.io) standard — `.agents/skills/` and `.claude/skills/` mirror the canonical `.github/skills/` tree for easier cross-agent discovery.
+
+Before asking an external system to fetch or download a paper, call the MCP `identify` tool to check exact DOI / PMID / title duplicates in the library and an optional workspace.
 
 For a quick overview of built-in skills, see `.github/skills/`, `CLAUDE.md`, or `AGENTS.md`. If you are new to the project, start with `autor-overview`.
 
@@ -110,9 +112,9 @@ For a quick overview of built-in skills, see `.github/skills/`, `CLAUDE.md`, or 
 PDF → MinerU → Structured Markdown (figures + LaTeX preserved)
                     ↓
           Metadata extraction (regex + LLM cross-check)
-          API enrichment (Crossref / Semantic Scholar / OpenAlex)
+          API enrichment (Crossref / Semantic Scholar / OpenAlex / PubMed)
                     ↓
-          DOI dedup → data/papers/<Author-Year-Title>/
+          DOI / PMID dedup → data/papers/<Author-Year-Title>/
                     ↓
       ┌─────────────┼─────────────┐
    FTS5 index      FAISS vectors      BERTopic
@@ -140,6 +142,7 @@ Main config: `config.yaml` (tracked in git). Sensitive data: `config.local.yaml`
 |-----|---------|---------------|
 | `DEEPSEEK_API_KEY` | LLM — metadata extraction, content enrichment, academic discussion | [DeepSeek](https://platform.deepseek.com/) (default) or any OpenAI-compatible API |
 | `MINERU_API_KEY` | PDF → structured Markdown | Free from [mineru.net](https://mineru.net/apiManage/token), or [self-host](https://github.com/opendatalab/MinerU) |
+| `NCBI_API_KEY` | PubMed / E-utilities PMID lookup with higher rate limits | [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/) |
 
 > **Both are optional.** Without an LLM key, autor falls back to regex-only extraction. Without a MinerU key, place `.md` files directly into `data/inbox/`.
 
@@ -202,7 +205,7 @@ autor metrics              View LLM usage statistics
 ```
 autor/          # Python package
   cli.py             # CLI entry point (35 top-level commands)
-  mcp_server.py      # MCP server (31 tools)
+  mcp_server.py      # MCP server (32 tools)
   ingest/            # PDF parsing + metadata pipeline
   index.py           # FTS5 full-text search
   vectors.py         # Full-text chunk embeddings + FAISS retrieval

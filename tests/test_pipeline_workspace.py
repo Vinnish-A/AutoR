@@ -174,3 +174,85 @@ class TestRunPipelineWorkspace:
         assert "missing-doi" in pending_dirs
         assert len(pending_dirs) == 2
         assert pending_dirs & {"duplicate", "good"}
+
+    def test_regular_ingest_persists_pmid_metadata(self, tmp_path, monkeypatch):
+        cfg = _build_config({"ingest": {"extractor": "regex"}}, tmp_path)
+        cfg.ensure_dirs()
+
+        inbox_dir = tmp_path / "data" / "inbox"
+        _write_markdown(
+            inbox_dir / "pmid-paper.md",
+            title="PMID persistence paper",
+            authors="Alice Smith, Bob Doe",
+            doi="10.1234/pmid.paper",
+        )
+
+        def fake_enrich(meta):
+            meta.pmid = "34567890"
+            meta.abstract = meta.abstract or "API abstract with PMID."
+            return meta
+
+        monkeypatch.setattr("autor.ingest.metadata.enrich_metadata", fake_enrich)
+
+        pipeline.run_pipeline(
+            ["extract", "dedup", "ingest"],
+            cfg,
+            {
+                "dry_run": False,
+                "no_api": False,
+                "force": False,
+                "inspect": False,
+                "max_retries": 2,
+                "rebuild": False,
+            },
+        )
+
+        paper_dirs = sorted((tmp_path / "data" / "papers").iterdir())
+        assert len(paper_dirs) == 1
+
+        meta = json.loads((paper_dirs[0] / "meta.json").read_text(encoding="utf-8"))
+        assert meta["pmid"] == "34567890"
+        assert meta["ids"]["pmid"] == "34567890"
+
+    def test_queue_mode_runs_embed_and_index_per_ingested_sample(self, tmp_path, monkeypatch):
+        cfg = _build_config({"ingest": {"extractor": "regex"}}, tmp_path)
+        cfg.ensure_dirs()
+
+        inbox_dir = tmp_path / "data" / "inbox"
+        _write_markdown(
+            inbox_dir / "queue-paper.md",
+            title="Queue Mode Paper",
+            authors="Alice Smith",
+            doi="10.1234/queue.paper",
+        )
+
+        calls: list[tuple[str, set[str] | None]] = []
+
+        def fake_embed(_papers_dir, _cfg, opts):
+            calls.append(("embed", opts.get("paper_ids")))
+            return pipeline.StepResult.OK
+
+        def fake_index(_papers_dir, _cfg, opts):
+            calls.append(("index", opts.get("paper_ids")))
+            return pipeline.StepResult.OK
+
+        monkeypatch.setitem(pipeline.STEPS, "embed", pipeline.StepDef(fn=fake_embed, scope="global", desc="fake embed"))
+        monkeypatch.setitem(pipeline.STEPS, "index", pipeline.StepDef(fn=fake_index, scope="global", desc="fake index"))
+
+        pipeline.run_pipeline(
+            ["extract", "dedup", "ingest", "embed", "index"],
+            cfg,
+            {
+                "dry_run": False,
+                "no_api": True,
+                "force": False,
+                "inspect": False,
+                "max_retries": 2,
+                "rebuild": False,
+            },
+        )
+
+        assert len(calls) == 2
+        assert calls[0][0] == "embed"
+        assert calls[1][0] == "index"
+        assert all(isinstance(paper_ids, set) and len(paper_ids) == 1 for _, paper_ids in calls)

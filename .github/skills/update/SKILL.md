@@ -1,6 +1,6 @@
 ---
 name: update
-description: Revise a manuscript under reviewer or editor comments with minimum-necessary, traceable edits. Uses local evidence first, AutoDownload REST only for justified literature gaps, and `trials` for registry evidence.
+description: Revise a manuscript under reviewer or editor comments with minimum-necessary, traceable edits. Uses local evidence first, the Records-backed AutoDownload REST service only for justified literature gaps, and `trials` for registry evidence.
 license: MIT
 ---
 
@@ -50,7 +50,7 @@ Typical use cases:
 - **Freeform whole-manuscript polishing** -> use `polish` or `writing-polish`
 - **Point-by-point response letter only** -> use `review-response`
 - **A new review manuscript or section drafted from scratch** -> use `plan`, `write`, `literature-review`, or `paper-writing`
-- **Unbounded literature expansion around the topic** -> use `autodownload-*` or `explore` as a separate evidence-building workflow
+- **Unbounded literature expansion around the topic** -> use `autodownload` or `explore` as a separate evidence-building workflow
 
 ## Workspace and output location
 
@@ -117,7 +117,7 @@ Optional:
 | --- | --- |
 | `search`, `show`, `graph`, `citations` | First-pass evidence retrieval inside the local library or workspace |
 | `trials` | Reviewer comments ask for clinical-trial phase, status, recruitment, location, or registry evidence |
-| `autodownload-overview` | Outside literature is justified and must be acquired through AutoDownload's REST API |
+| `autodownload` | Outside literature is justified and must be acquired through the Records service REST API |
 | `review-response` | The manuscript revision is done and the user now needs a point-by-point response letter |
 | `citation-check` | New citations were added and must be verified before submission |
 | `polish`, `writing-polish` | Structural revision is complete and the user wants final language cleanup |
@@ -257,14 +257,14 @@ Apply the scope strictly:
 
 When outside literature acquisition is justified:
 
-- use **AutoDownload as a RESTful service**
+- use the **Records-backed AutoDownload service** as the RESTful acquisition layer
 - do **not** describe the acquisition step as an MCP workflow
-- prefer `autodownload-overview` for the service boundary and endpoint choice
+- prefer `autodownload` for the service boundary and endpoint choice
 
 Recommended sequence:
 
 1. screen internally first with `search`, `show`, `graph`, and `citations`
-2. if the gap remains, use AutoDownload REST endpoints for candidate generation or identifier resolution:
+2. if the gap remains, use the Records service REST endpoints for candidate generation or identifier resolution:
    - `/retrieve`
    - `/lookup`
    - `/resolve`
@@ -397,7 +397,7 @@ If the user allows outside literature with `external_search_scope = minimal_gap_
 - localize edits to the affected sections and paragraphs
 - handle conceptual comments mainly through micro-inserts or paragraph expansions
 - handle systematic comments mainly through a table or focused subsection
-- use AutoDownload REST or `trials` only for evidence gaps that cannot be closed internally
+- use the Records service REST API or `trials` only for evidence gaps that cannot be closed internally
 - deliver the original manuscript copy, revised manuscript, revision mapping table, and optional evidence log
 
 ## Example prompts

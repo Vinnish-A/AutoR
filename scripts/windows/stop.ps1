@@ -38,7 +38,7 @@ foreach ($connectionPid in $connections) {
 Start-Sleep -Seconds 1
 
 if (Test-Health -Port $port) {
-    throw "AutoDownload 仍在运行: http://127.0.0.1:$port"
+    throw "The Records service is still running: http://127.0.0.1:$port"
 }
 
-Write-Host "AutoDownload 已停止。"
+Write-Host "Records service stopped."

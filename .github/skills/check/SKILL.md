@@ -1,6 +1,6 @@
 ---
 name: check
-description: Use this skill after a review draft is complete. It launches an independent checking sub-agent near the end of the manuscript to systematically inspect the review's structure, prose quality, mechanistic argumentation, clinical-evidence organization, analytical value of tables, and AI-like tone. If the draft falls short, surface polishing is not allowed; the specified sections must be sent back and rewritten against a concrete issue list.
+description: Use this skill after a review draft is complete. It launches an independent checking sub-agent near the end of the manuscript to systematically inspect the review's structure, prose quality, section-opening seed quality, mechanistic argumentation, clinical-evidence organization, analytical value of tables, and AI-like tone. If the draft falls short, surface polishing is not allowed; the specified sections must be sent back and rewritten against a concrete issue list.
 license: MIT
 ---
 
@@ -21,7 +21,8 @@ Your responsibilities are to:
 3. **Check whether the mechanism section actually builds mechanisms rather than offering a grab bag of labels**
 4. **Check whether the clinical section establishes evidence gradients and decision logic**
 5. **Check whether the tables add analytical value**
-6. **If the draft is not good enough, send it back for rewriting and specify which sections must be rewritten and how**
+6. **Check whether the major section openings are distinct, conclusion-led, and non-interchangeable**
+7. **If the draft is not good enough, send it back for rewriting and specify which sections must be rewritten and how**
 
 ---
 
@@ -111,6 +112,16 @@ Check whether the draft pulls in too much material that is related, but not part
 - solid-tumor analogies taking up too much space without directly serving the core topic
 
 If the **scope of discussion** is clearly larger than the **scope of conclusions that the evidence can safely support**, judge the manuscript as **bloated and unfocused**.
+
+### 4. Are the section openings distinct and conclusion-led?
+Each major section opening should quickly state the tension, ranking, boundary, or decision logic that the section will carry.
+
+Warning signs:
+- multiple sections begin with polished scene-setting and delayed specificity
+- the same opening move could be reused across three sections with only noun substitution
+- the opening sounds broad and fluent, but the section's real judgment appears only much later
+
+If the openings are interchangeable, judge this as a **seed failure** and send the manuscript back for rewrite rather than recommending local line edits.
 
 ---
 
@@ -351,6 +362,7 @@ Therefore, the following cases should **not** be treated as matching the Nature 
 If the manuscript performs well in most of the following respects, you may judge it “close to the Nature Reviews style”:
 - clear through-line
 - progressive chapter structure
+- major section openings that state a real judgment early
 - restrained language
 - emphasis on explanation and judgment
 - controlled use of abbreviations and terminology
@@ -375,6 +387,7 @@ then you should state clearly:
 Only allow a direct pass when all of the following are met at the same time:
 - the through-line is clear and sufficiently strong
 - the chapters progress clearly
+- the major section openings are distinct, conclusion-led, and non-interchangeable
 - the mechanism section forms a “failure mode -> second-step strategy” framework
 - the clinical section establishes evidence levels and applicability boundaries
 - the tables add analytical value
@@ -393,6 +406,7 @@ then you may provide targeted revision suggestions.
 If any of the following is present, the manuscript must be sent back:
 - the structure lacks a strong through-line
 - the sections are heavily repetitive
+- the section openings sound interchangeable or generic despite polished wording
 - the mechanism section is only a grab bag of mechanism labels
 - the clinical section is only a list of studies
 - the evidence hierarchy is confused
@@ -427,6 +441,7 @@ List chapter by chapter:
 ## 4. Rewrite instructions
 You must provide executable instructions rather than vague advice. For example:
 - “Rewrite the mechanism chapter into a four-part ‘failure mode -> second-step strategy’ framework”
+- “Redo the opening paragraphs from a conclusion-led seed map; each major section should declare its working judgment within the first paragraph”
 - “Compress the solid-tumor and platform-technology material into the end of the outlook section; do not let it occupy major body chapters”
 - “Reorganize the clinical studies by evidence tier, prioritizing formal clinical studies and clearly registered studies”
 - “Delete repeated conceptual sentences; keep the first definition, then drive the argument forward directly”

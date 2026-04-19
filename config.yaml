@@ -62,6 +62,7 @@ ingest:
   abstract_llm_mode: verify # off | fallback | verify
   contact_email: null # Crossref polite pool email → config.local.yaml
   s2_api_key: null # Semantic Scholar API key → config.local.yaml or env S2_API_KEY
+  ncbi_api_key: null # NCBI E-utilities / PubMed API key → config.local.yaml or env NCBI_API_KEY
   mineru_batch_size: 20 # Cloud batch size per request 云端每批文件数上限
   chunk_page_limit: 100 # Auto-split PDFs exceeding this page count 超长 PDF 自动切分页数阈值
 
@@ -97,3 +98,13 @@ translate:
   target_lang: zh # Default target language 默认目标语言
   chunk_size: 4000 # Translation chunk size in characters 翻译分块大小（字符）
   concurrency: 5 # Translation concurrency 翻译并发数
+
+# Plot generation 绘图（Nano Banana）
+plot:
+  host: https://grsai.dakka.com.cn # Relay host 中转服务地址
+  api_key: null # → config.local.yaml or env AUTOR_PLOT_API_KEY
+  model: nano-banana-pro # default drawing model 默认绘图模型
+  image_size: 1K # 1K | 2K | 4K
+  aspect_ratio: auto # auto | 1:1 | 16:9 | 9:16 | ...
+  timeout: 600 # total plot task timeout (sec) 绘图总超时（秒）
+  poll_interval: 5 # result polling interval (sec) 结果轮询间隔（秒）

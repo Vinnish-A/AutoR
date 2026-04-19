@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -25,6 +26,8 @@ from autor.papers import best_citation, parse_year_range
 
 if TYPE_CHECKING:
     from autor.config import Config
+
+_log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS papers USING fts5(
@@ -57,6 +60,7 @@ CREATE TABLE IF NOT EXISTS papers_registry (
     dir_name             TEXT NOT NULL UNIQUE,
     title                TEXT,
     doi                  TEXT,
+    pmid                 TEXT,
     publication_number   TEXT,
     year                 INTEGER,
     first_author         TEXT
@@ -71,6 +75,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_doi
 _REGISTRY_PUBNUM_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_publication_number
     ON papers_registry(publication_number) WHERE publication_number IS NOT NULL AND publication_number != '';
+"""
+
+_REGISTRY_PMID_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_pmid
+    ON papers_registry(pmid) WHERE pmid IS NOT NULL AND pmid != '';
+"""
+
+_REGISTRY_TITLE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_registry_title_exact
+    ON papers_registry(LOWER(TRIM(title))) WHERE title IS NOT NULL AND title != '';
 """
 
 _CITATIONS_SCHEMA = """
@@ -97,6 +111,7 @@ def _index_hash(meta: dict) -> str:
         meta.get("abstract") or "",
         meta.get("l3_conclusion") or "",
         meta.get("doi") or "",
+        meta.get("pmid") or ((meta.get("ids") or {}).get("pmid", "") or ""),
         meta.get("paper_type") or "",
         ((meta.get("ids") or {}).get("patent_publication_number", "") or ""),
     ]
@@ -112,7 +127,192 @@ def _index_hash(meta: dict) -> str:
 _best_citation = best_citation  # backward compat alias
 
 
-def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
+def _normalize_doi(value: str | None) -> str:
+    """Normalize DOI strings for exact registry matching."""
+    return (value or "").strip().lower()
+
+
+def _normalize_pmid(value: str | None) -> str:
+    """Normalize PubMed IDs from raw inputs, prefixes, or URLs."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    url_match = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", text, re.IGNORECASE)
+    if url_match:
+        return url_match.group(1)
+    text = re.sub(r"^pmid:\s*", "", text, flags=re.IGNORECASE).strip()
+    return text if text.isdigit() else ""
+
+
+def _normalize_exact_title(value: str | None) -> str:
+    """Normalize titles for case-insensitive exact matching."""
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def _ensure_registry_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
+    """Add a missing column to ``papers_registry`` for backward compatibility."""
+    try:
+        conn.execute(f"SELECT {column} FROM papers_registry LIMIT 0")
+    except sqlite3.OperationalError:
+        conn.execute(f"ALTER TABLE papers_registry ADD COLUMN {column} {column_type}")
+
+
+def _create_partial_index_with_fallback(
+    conn: sqlite3.Connection,
+    *,
+    unique_sql: str,
+    fallback_sql: str,
+    label: str,
+) -> None:
+    """Create a partial UNIQUE index, falling back to a non-unique one on duplicates."""
+    try:
+        conn.execute(unique_sql)
+    except sqlite3.OperationalError:
+        pass
+    except sqlite3.IntegrityError:
+        _log.warning(
+            "cannot create UNIQUE index on %s: duplicate values exist; falling back to non-unique index",
+            label,
+        )
+        try:
+            conn.execute(fallback_sql)
+        except sqlite3.OperationalError:
+            pass
+
+
+def _ensure_registry_runtime_compat(conn: sqlite3.Connection) -> None:
+    """Ensure registry columns and exact-match indexes exist on legacy databases."""
+    conn.execute(_REGISTRY_SCHEMA)
+    _ensure_registry_column(conn, "pmid", "TEXT")
+    _ensure_registry_column(conn, "publication_number", "TEXT")
+    try:
+        conn.execute(_REGISTRY_DOI_INDEX)
+    except sqlite3.OperationalError:
+        pass
+    _create_partial_index_with_fallback(
+        conn,
+        unique_sql=_REGISTRY_PMID_INDEX,
+        fallback_sql=(
+            "CREATE INDEX IF NOT EXISTS idx_registry_pmid_nonunique "
+            "ON papers_registry(pmid) WHERE pmid IS NOT NULL AND pmid != ''"
+        ),
+        label="pmid",
+    )
+    _create_partial_index_with_fallback(
+        conn,
+        unique_sql=_REGISTRY_PUBNUM_INDEX,
+        fallback_sql=(
+            "CREATE INDEX IF NOT EXISTS idx_registry_publication_number "
+            "ON papers_registry(publication_number) "
+            "WHERE publication_number IS NOT NULL AND publication_number != ''"
+        ),
+        label="publication_number",
+    )
+    try:
+        conn.execute(_REGISTRY_TITLE_INDEX)
+    except sqlite3.OperationalError:
+        pass
+
+
+def _upsert_registry_record(
+    conn: sqlite3.Connection,
+    *,
+    paper_id: str,
+    dir_name: str,
+    title: str,
+    doi: str,
+    pmid: str,
+    publication_number: str,
+    year: int | None,
+    first_author: str,
+) -> None:
+    """Insert or update a registry row while degrading conflicting optional IDs safely."""
+    record = {
+        "paper_id": paper_id,
+        "dir_name": dir_name,
+        "title": title,
+        "doi": doi,
+        "pmid": pmid,
+        "publication_number": publication_number,
+        "year": year,
+        "first_author": first_author,
+    }
+    sql = """INSERT INTO papers_registry
+                (id, dir_name, title, doi, pmid, publication_number, year, first_author)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                dir_name=excluded.dir_name,
+                title=excluded.title,
+                doi=excluded.doi,
+                pmid=excluded.pmid,
+                publication_number=excluded.publication_number,
+                year=excluded.year,
+                first_author=excluded.first_author"""
+    while True:
+        try:
+            conn.execute(
+                sql,
+                (
+                    record["paper_id"],
+                    record["dir_name"],
+                    record["title"],
+                    record["doi"],
+                    record["pmid"],
+                    record["publication_number"],
+                    record["year"],
+                    record["first_author"],
+                ),
+            )
+            return
+        except sqlite3.IntegrityError as exc:
+            err_msg = str(exc).lower()
+            if "pmid" in err_msg and record["pmid"]:
+                _log.warning(
+                    "pmid %r for paper %s conflicts with another paper; storing without pmid",
+                    record["pmid"],
+                    paper_id,
+                )
+                record["pmid"] = ""
+                continue
+            if "publication_number" in err_msg and record["publication_number"]:
+                _log.warning(
+                    "publication_number %r for paper %s conflicts with another paper; storing without publication_number",
+                    record["publication_number"],
+                    paper_id,
+                )
+                record["publication_number"] = ""
+                continue
+            _log.warning("IntegrityError for paper %s: %s; skipping registry update", paper_id, exc)
+            return
+
+
+def _select_registry_rows(
+    conn: sqlite3.Connection,
+    clause: str,
+    params: tuple[object, ...] = (),
+    *,
+    paper_ids: set[str] | None = None,
+) -> list[dict]:
+    """Run a registry query and return rows as dictionaries."""
+    if paper_ids is not None and not paper_ids:
+        return []
+    sql = f"SELECT * FROM papers_registry WHERE {clause}"
+    query_params: list[object] = list(params)
+    if paper_ids is not None:
+        ids_sorted = sorted(paper_ids)
+        sql += f" AND id IN ({','.join('?' for _ in ids_sorted)})"
+        query_params.extend(ids_sorted)
+    sql += " ORDER BY year DESC, dir_name"
+    return [dict(row) for row in conn.execute(sql, tuple(query_params)).fetchall()]
+
+
+def build_index(
+    papers_dir: Path,
+    db_path: Path,
+    rebuild: bool = False,
+    *,
+    paper_ids: set[str] | None = None,
+) -> int:
     """建立或增量更新 SQLite FTS5 全文检索索引。
 
     索引字段: ``title`` + ``abstract`` + ``conclusion``，
@@ -122,6 +322,7 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
         papers_dir: 已入库论文目录，扫描其中的 ``*.json``。
         db_path: SQLite 数据库路径，不存在时自动创建。
         rebuild: 为 ``True`` 时清空旧数据后重建。
+        paper_ids: 可选；仅增量更新指定 UUID 的论文。``rebuild=True`` 时忽略。
 
     Returns:
         本次索引的论文数量。
@@ -134,39 +335,8 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(_SCHEMA)
         conn.execute(_HASH_SCHEMA)
-        conn.execute(_REGISTRY_SCHEMA)
+        _ensure_registry_runtime_compat(conn)
         conn.execute(_CITATIONS_SCHEMA)
-        try:
-            conn.execute(_REGISTRY_DOI_INDEX)
-        except sqlite3.OperationalError:
-            pass  # index already exists
-        # Migrate: add publication_number column if missing (pre-existing DB)
-        try:
-            conn.execute("SELECT publication_number FROM papers_registry LIMIT 0")
-        except sqlite3.OperationalError:
-            try:
-                conn.execute("ALTER TABLE papers_registry ADD COLUMN publication_number TEXT")
-            except sqlite3.OperationalError:
-                pass
-        try:
-            conn.execute(_REGISTRY_PUBNUM_INDEX)
-        except sqlite3.OperationalError:
-            pass
-        except sqlite3.IntegrityError:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "cannot create UNIQUE index on publication_number: duplicate values exist; "
-                "falling back to non-unique index"
-            )
-            try:
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_registry_publication_number "
-                    "ON papers_registry(publication_number) "
-                    "WHERE publication_number IS NOT NULL AND publication_number != ''"
-                )
-            except sqlite3.OperationalError:
-                pass
         try:
             conn.execute(_CITATIONS_IDX_TARGET_DOI)
         except sqlite3.OperationalError:
@@ -190,12 +360,15 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
                 existing_hashes[row[0]] = row[1]
 
         count = 0
+        target_ids = None if rebuild or paper_ids is None else set(paper_ids)
         for pdir in iter_paper_dirs(papers_dir):
             try:
                 meta = _read_meta(pdir)
             except (ValueError, FileNotFoundError):
                 continue
             paper_id = meta.get("id") or pdir.name
+            if target_ids is not None and paper_id not in target_ids:
+                continue
             h = _index_hash(meta)
             if not rebuild and existing_hashes.get(paper_id) == h:
                 continue  # unchanged, skip
@@ -237,68 +410,18 @@ def build_index(papers_dir: Path, db_path: Path, rebuild: bool = False) -> int:
             # would do when the new pub_num collides with another id's row).
             dir_name = pdir.name
             pub_num = ((meta.get("ids") or {}).get("patent_publication_number", "") or "").upper().strip()
-            try:
-                doi_norm = (meta.get("doi") or "").lower().strip()
-                conn.execute(
-                    """INSERT INTO papers_registry
-                       (id, dir_name, title, doi, publication_number, year, first_author)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(id) DO UPDATE SET
-                           dir_name=excluded.dir_name,
-                           title=excluded.title,
-                           doi=excluded.doi,
-                           publication_number=excluded.publication_number,
-                           year=excluded.year,
-                           first_author=excluded.first_author""",
-                    (
-                        paper_id,
-                        dir_name,
-                        meta.get("title") or "",
-                        doi_norm,
-                        pub_num,
-                        meta.get("year"),
-                        meta.get("first_author_lastname") or "",
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                import logging
-
-                _idx_log = logging.getLogger(__name__)
-                err_msg = str(exc).lower()
-                if "publication_number" in err_msg and pub_num:
-                    _idx_log.warning(
-                        "publication_number %r for paper %s conflicts with another paper; "
-                        "storing without publication_number",
-                        pub_num,
-                        paper_id,
-                    )
-                    conn.execute(
-                        """INSERT INTO papers_registry
-                           (id, dir_name, title, doi, publication_number, year, first_author)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(id) DO UPDATE SET
-                               dir_name=excluded.dir_name,
-                               title=excluded.title,
-                               doi=excluded.doi,
-                               publication_number=excluded.publication_number,
-                               year=excluded.year,
-                               first_author=excluded.first_author""",
-                        (
-                            paper_id,
-                            dir_name,
-                            meta.get("title") or "",
-                            doi_norm,
-                            "",  # clear conflicting pub_num
-                            meta.get("year"),
-                            meta.get("first_author_lastname") or "",
-                        ),
-                    )
-                else:
-                    _idx_log.warning(
-                        "IntegrityError for paper %s: %s; skipping registry update",
-                        paper_id,
-                        exc,
-                    )
+            pmid_norm = _normalize_pmid(meta.get("pmid") or ((meta.get("ids") or {}).get("pmid", "") or ""))
+            _upsert_registry_record(
+                conn,
+                paper_id=paper_id,
+                dir_name=dir_name,
+                title=meta.get("title") or "",
+                doi=_normalize_doi(meta.get("doi") or ""),
+                pmid=pmid_norm,
+                publication_number=pub_num,
+                year=meta.get("year"),
+                first_author=meta.get("first_author_lastname") or "",
+            )
 
             # Insert references into citations table
             refs = _reference_dois(meta.get("references") or [])
@@ -627,14 +750,16 @@ def _enrich_dir_names(results: list[dict], conn: sqlite3.Connection) -> list[dic
 
 
 def lookup_paper(db_path: Path, user_input: str) -> dict | None:
-    """查找论文：支持 UUID、dir_name、DOI、专利公开号。
+    """查找论文：支持 UUID、dir_name、DOI、PMID、专利公开号。
 
-    按以下顺序尝试匹配: UUID → dir_name → DOI → publication_number。
+    按以下顺序尝试匹配: UUID → dir_name → DOI → publication_number → PMID。
+    对纯数字输入，优先匹配专利公开号以兼容历史行为；若需要强制按 PMID
+    查询，可使用 ``PMID:12345678`` 形式。PMID 查询会自动归一化数字形式；
     公开号查询会自动归一化为大写。
 
     Args:
         db_path: SQLite 数据库路径。
-        user_input: UUID、目录名、DOI 或专利公开号。
+        user_input: UUID、目录名、DOI、PMID 或专利公开号。
 
     Returns:
         ``papers_registry`` 行字典，找不到时返回 ``None``。
@@ -649,6 +774,7 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
         if not has_table:
             return None
         conn.row_factory = sqlite3.Row
+        _ensure_registry_runtime_compat(conn)
         # Try UUID
         row = conn.execute("SELECT * FROM papers_registry WHERE id = ?", (user_input,)).fetchone()
         if row:
@@ -658,7 +784,7 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
         if row:
             return dict(row)
         # Try DOI (new DBs store lowercase DOI; old DBs may still contain mixed case)
-        normalized_doi = user_input.strip().lower()
+        normalized_doi = _normalize_doi(user_input)
         row = conn.execute(
             "SELECT * FROM papers_registry WHERE doi = ?",
             (normalized_doi,),
@@ -681,9 +807,86 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
                 return dict(row)
         except sqlite3.OperationalError:
             pass  # column may not exist in old DB
+        normalized_pmid = _normalize_pmid(user_input)
+        if normalized_pmid:
+            try:
+                row = conn.execute(
+                    "SELECT * FROM papers_registry WHERE pmid = ?",
+                    (normalized_pmid,),
+                ).fetchone()
+                if row:
+                    return dict(row)
+            except sqlite3.OperationalError:
+                pass
     finally:
         conn.close()
     return None
+
+
+def find_exact_matches(
+    db_path: Path,
+    *,
+    doi: str | None = None,
+    pmid: str | None = None,
+    title: str | None = None,
+    paper_ids: set[str] | None = None,
+) -> dict[str, list[dict]]:
+    """Find exact registry matches by DOI, PMID, and/or exact title.
+
+    Args:
+        db_path: SQLite 数据库路径。
+        doi: 精确 DOI（大小写不敏感）。
+        pmid: 精确 PubMed ID。
+        title: 精确标题（大小写不敏感）。
+        paper_ids: 可选 paper_id 子集，用于工作区过滤。
+
+    Returns:
+        结果字典，包含 ``doi``、``pmid``、``title`` 三个字段匹配列表，
+        以及去重后的 ``records`` 总表。
+    """
+    empty: dict[str, list[dict]] = {"doi": [], "pmid": [], "title": [], "records": []}
+    if not db_path.exists():
+        raise FileNotFoundError(f"Index not built: {db_path}")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        has_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='papers_registry'"
+        ).fetchone()
+        if not has_table:
+            raise FileNotFoundError(f"papers_registry missing in index: {db_path}")
+        _ensure_registry_runtime_compat(conn)
+
+        results: dict[str, list[dict]] = {"doi": [], "pmid": [], "title": []}
+        normalized_doi = _normalize_doi(doi)
+        if normalized_doi:
+            rows = _select_registry_rows(conn, "doi = ?", (normalized_doi,), paper_ids=paper_ids)
+            if not rows:
+                rows = _select_registry_rows(conn, "LOWER(doi) = ?", (normalized_doi,), paper_ids=paper_ids)
+            results["doi"] = rows
+        normalized_pmid = _normalize_pmid(pmid)
+        if normalized_pmid:
+            try:
+                results["pmid"] = _select_registry_rows(conn, "pmid = ?", (normalized_pmid,), paper_ids=paper_ids)
+            except sqlite3.OperationalError:
+                results["pmid"] = []
+        normalized_title = _normalize_exact_title(title)
+        if normalized_title:
+            results["title"] = _select_registry_rows(
+                conn,
+                "LOWER(TRIM(title)) = ?",
+                (normalized_title,),
+                paper_ids=paper_ids,
+            )
+
+        merged: dict[str, dict] = {}
+        for field in ("doi", "pmid", "title"):
+            for row in results[field]:
+                merged.setdefault(row["id"], row)
+        results["records"] = list(merged.values())
+        return results
+    finally:
+        conn.close()
 
 
 def unified_search(

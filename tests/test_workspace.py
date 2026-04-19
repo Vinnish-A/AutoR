@@ -11,7 +11,18 @@ import json
 
 import pytest
 
-from autor.workspace import add, create, list_workspaces, read_paper_ids, rename, validate_workspace_name
+from autor.index import build_index
+from autor.workspace import (
+    add,
+    create,
+    dump_metadata,
+    export_metadata,
+    identify_exact,
+    list_workspaces,
+    read_paper_ids,
+    rename,
+    validate_workspace_name,
+)
 
 
 class TestWorkspaceCreate:
@@ -83,6 +94,24 @@ class TestAddResolved:
         assert read_paper_ids(ws_dir) == {"aaaa-1111", "bbbb-2222", "cccc-3333"}
 
 
+class TestIdentifyExact:
+    def test_identifies_matches_inside_workspace(self, tmp_path, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        ws_dir = tmp_path / "workspace" / "car-t-sequential"
+        create(ws_dir)
+        add(ws_dir, [], tmp_db, resolved=[{"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"}])
+
+        matches = identify_exact(
+            ws_dir,
+            tmp_db,
+            doi="10.1234/jfm.2023.001",
+            pmid="12345678",
+            title="Turbulence modeling in boundary layers",
+        )
+
+        assert [row["id"] for row in matches["records"]] == ["aaaa-1111"]
+
+
 class TestListWorkspaces:
     """list_workspaces contract: discovers workspace directories."""
 
@@ -101,6 +130,51 @@ class TestListWorkspaces:
 
         names = list_workspaces(ws_root)
         assert names == ["real"]
+
+
+class TestExportMetadata:
+    def test_exports_workspace_metadata_from_papers_json(self, tmp_path, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        ws_dir = tmp_path / "workspace" / "meta-ws"
+        create(ws_dir)
+        add(
+            ws_dir,
+            [],
+            tmp_db,
+            resolved=[
+                {"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"},
+                {"id": "bbbb-2222", "dir_name": "Wang-2024-DeepLearning"},
+            ],
+        )
+
+        rows = export_metadata(ws_dir, tmp_papers, tmp_db)
+
+        assert [row["id"] for row in rows] == ["aaaa-1111", "bbbb-2222"]
+        assert rows[0]["doi"] == "10.1234/jfm.2023.001"
+        assert rows[0]["pmid"] == "12345678"
+        assert rows[1]["doi"] == ""
+
+    def test_dump_metadata_supports_csv(self):
+        rows = [
+            {
+                "id": "aaaa-1111",
+                "dir_name": "Smith-2023-Turbulence",
+                "title": "Turbulence modeling in boundary layers",
+                "authors": ["John Smith", "Jane Doe"],
+                "year": 2023,
+                "journal": "Journal of Fluid Mechanics",
+                "paper_type": "journal-article",
+                "doi": "10.1234/jfm.2023.001",
+                "pmid": "12345678",
+                "publication_number": "",
+                "added_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+
+        csv_text = dump_metadata(rows, fmt="csv")
+
+        assert "id,dir_name,title,authors,year,journal,paper_type,doi,pmid,publication_number,added_at" in csv_text
+        assert "John Smith; Jane Doe" in csv_text
 
 
 class TestRenameWorkspace:

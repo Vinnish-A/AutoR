@@ -78,6 +78,13 @@ class TestBuildConfig:
         assert cfg.ingest.chunk_page_limit == 100
         assert cfg.ingest.mineru_batch_size == 20
 
+    def test_plot_defaults(self, tmp_path):
+        cfg = _build_config({}, tmp_path)
+        assert cfg.plot.host == "https://grsai.dakka.com.cn"
+        assert cfg.plot.model == "nano-banana-pro"
+        assert cfg.plot.image_size == "1K"
+        assert cfg.plot.aspect_ratio == "auto"
+
     def test_null_sections_handled(self, tmp_path):
         data = {"llm": None, "paths": None}
         cfg = _build_config(data, tmp_path)
@@ -142,6 +149,25 @@ class TestBuildConfig:
         assert cfg.embed.cache_dir == "/yaml-cache"
         assert cfg.embed.model == "yaml-model"
         assert cfg.embed.hf_endpoint == "https://yaml-mirror.example"
+
+    def test_plot_env_vars_override_yaml(self, tmp_path, monkeypatch):
+        data = {
+            "plot": {
+                "host": "https://yaml.example",
+                "model": "nano-banana",
+                "image_size": "2K",
+                "aspect_ratio": "1:1",
+            }
+        }
+        monkeypatch.setenv("AUTOR_PLOT_HOST", "https://env.example")
+        monkeypatch.setenv("AUTOR_PLOT_MODEL", "nano-banana-pro")
+        monkeypatch.setenv("AUTOR_PLOT_IMAGE_SIZE", "1K")
+        monkeypatch.setenv("AUTOR_PLOT_ASPECT_RATIO", "auto")
+        cfg = _build_config(data, tmp_path)
+        assert cfg.plot.host == "https://env.example"
+        assert cfg.plot.model == "nano-banana-pro"
+        assert cfg.plot.image_size == "1K"
+        assert cfg.plot.aspect_ratio == "auto"
 
 
 class TestConfigProperties:
@@ -248,6 +274,34 @@ class TestResolvedApiKey:
         cfg = _build_config({}, tmp_path)
         monkeypatch.delenv("S2_API_KEY", raising=False)
         assert cfg.resolved_s2_api_key() == ""
+
+    def test_ncbi_key_from_config(self, tmp_path):
+        cfg = _build_config({"ingest": {"ncbi_api_key": "ncbi-cfg"}}, tmp_path)
+        assert cfg.resolved_ncbi_api_key() == "ncbi-cfg"
+
+    def test_ncbi_key_from_env(self, tmp_path, monkeypatch):
+        cfg = _build_config({}, tmp_path)
+        monkeypatch.setenv("NCBI_API_KEY", "ncbi-env")
+        assert cfg.resolved_ncbi_api_key() == "ncbi-env"
+
+    def test_ncbi_key_config_wins_over_env(self, tmp_path, monkeypatch):
+        cfg = _build_config({"ingest": {"ncbi_api_key": "ncbi-cfg"}}, tmp_path)
+        monkeypatch.setenv("NCBI_API_KEY", "ncbi-env")
+        assert cfg.resolved_ncbi_api_key() == "ncbi-cfg"
+
+    def test_plot_key_from_config(self, tmp_path):
+        cfg = _build_config({"plot": {"api_key": "plot-cfg"}}, tmp_path)
+        assert cfg.resolved_plot_api_key() == "plot-cfg"
+
+    def test_plot_key_from_env(self, tmp_path, monkeypatch):
+        cfg = _build_config({}, tmp_path)
+        monkeypatch.setenv("AUTOR_PLOT_API_KEY", "plot-env")
+        assert cfg.resolved_plot_api_key() == "plot-env"
+
+    def test_plot_key_config_wins_over_env(self, tmp_path, monkeypatch):
+        cfg = _build_config({"plot": {"api_key": "plot-cfg"}}, tmp_path)
+        monkeypatch.setenv("AUTOR_PLOT_API_KEY", "plot-env")
+        assert cfg.resolved_plot_api_key() == "plot-cfg"
 
 
 class TestLoadConfig:

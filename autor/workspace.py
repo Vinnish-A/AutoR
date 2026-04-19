@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,14 +83,14 @@ def add(
 ) -> list[dict]:
     """添加论文到工作区。
 
-    通过 UUID、目录名或 DOI 解析论文，去重后追加到 papers.json。
+    通过 UUID、目录名、DOI 或 PMID 解析论文，去重后追加到 papers.json。
 
     当调用方已持有解析好的论文信息时，可通过 *resolved* 参数直接传入，
     跳过逐个 ``lookup_paper()`` 查询（避免 O(N) 次 DB 连接开销）。
 
     Args:
         ws_dir: 工作区目录路径。
-        paper_refs: 论文引用列表（UUID / 目录名 / DOI）。
+        paper_refs: 论文引用列表（UUID / 目录名 / DOI / PMID）。
             当 *resolved* 不为 ``None`` 时本参数被忽略。
         db_path: index.db 路径，用于 lookup_paper。
         resolved: 预解析的论文列表，每个元素须含 ``"id"`` 和
@@ -147,7 +148,7 @@ def remove(ws_dir: Path, paper_refs: list[str], db_path: Path) -> list[dict]:
 
     Args:
         ws_dir: 工作区目录路径。
-        paper_refs: 论文引用列表（UUID / 目录名 / DOI）。
+        paper_refs: 论文引用列表（UUID / 目录名 / DOI / PMID）。
         db_path: index.db 路径。
 
     Returns:
@@ -258,6 +259,37 @@ def read_paper_ids(ws_dir: Path) -> set[str]:
     return {e["id"] for e in _read(ws_dir)}
 
 
+def identify_exact(
+    ws_dir: Path,
+    db_path: Path,
+    *,
+    doi: str | None = None,
+    pmid: str | None = None,
+    title: str | None = None,
+) -> dict[str, list[dict]]:
+    """在工作区范围内执行 DOI / PMID / 标题精确匹配。
+
+    Args:
+        ws_dir: 工作区目录路径。
+        db_path: index.db 路径。
+        doi: 精确 DOI。
+        pmid: 精确 PubMed ID。
+        title: 精确标题（大小写不敏感）。
+
+    Returns:
+        ``autor.index.find_exact_matches()`` 的结果字典，但仅包含该工作区中的论文。
+    """
+    from autor.index import find_exact_matches
+
+    return find_exact_matches(
+        db_path,
+        doi=doi,
+        pmid=pmid,
+        title=title,
+        paper_ids=read_paper_ids(ws_dir),
+    )
+
+
 def rename(ws_root: Path, old_name: str, new_name: str) -> Path:
     """重命名工作区。
 
@@ -314,3 +346,93 @@ def read_dir_names(ws_dir: Path, db_path: Path) -> set[str]:
         elif e.get("dir_name"):
             names.add(e["dir_name"])
     return names
+
+
+def export_metadata(
+    ws_dir: Path,
+    papers_dir: Path,
+    db_path: Path,
+) -> list[dict]:
+    """导出工作区论文的常用元信息。
+
+    按 ``papers.json`` 中记录的顺序读取，并尽量使用 registry 中的最新 dir_name。
+
+    Args:
+        ws_dir: 工作区目录路径。
+        papers_dir: 主库 ``data/papers`` 目录。
+        db_path: index.db 路径。
+
+    Returns:
+        元信息列表。每项至少包含 ``id`` / ``dir_name`` / ``title`` / ``doi`` / ``pmid``。
+    """
+    from autor.index import lookup_paper
+
+    rows: list[dict] = []
+    for entry in _read(ws_dir):
+        paper_id = entry["id"]
+        record = lookup_paper(db_path, paper_id)
+        dir_name = record["dir_name"] if record else entry.get("dir_name", "")
+        if not dir_name:
+            _log.warning("工作区论文缺少 dir_name，已跳过: %s", paper_id)
+            continue
+        meta_path = papers_dir / dir_name / "meta.json"
+        if not meta_path.exists():
+            _log.warning("工作区论文 meta.json 不存在，已跳过: %s", dir_name)
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            _log.warning("读取元信息失败，已跳过 %s: %s", dir_name, e)
+            continue
+
+        ids = meta.get("ids") or {}
+        rows.append(
+            {
+                "id": paper_id,
+                "dir_name": dir_name,
+                "title": meta.get("title") or "",
+                "authors": meta.get("authors") or [],
+                "year": meta.get("year"),
+                "journal": meta.get("journal") or "",
+                "paper_type": meta.get("paper_type") or "",
+                "doi": meta.get("doi") or "",
+                "pmid": meta.get("pmid") or ids.get("pmid", "") or "",
+                "publication_number": ids.get("patent_publication_number", "") or "",
+                "added_at": entry.get("added_at", ""),
+            }
+        )
+    return rows
+
+
+def dump_metadata(rows: list[dict], *, fmt: str = "json") -> str:
+    """序列化工作区元信息导出内容。"""
+    fmt = (fmt or "json").lower()
+    if fmt == "json":
+        return json.dumps(rows, indent=2, ensure_ascii=False) + "\n"
+    if fmt == "jsonl":
+        return "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+    if fmt == "csv":
+        import io
+
+        fieldnames = [
+            "id",
+            "dir_name",
+            "title",
+            "authors",
+            "year",
+            "journal",
+            "paper_type",
+            "doi",
+            "pmid",
+            "publication_number",
+            "added_at",
+        ]
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            csv_row = dict(row)
+            csv_row["authors"] = "; ".join(csv_row.get("authors") or [])
+            writer.writerow(csv_row)
+        return buf.getvalue()
+    raise ValueError(f"不支持的导出格式: {fmt}")

@@ -66,7 +66,7 @@ stop_mineru() {
     local pid
     pid="$(cat "$MINERU_PID_FILE")"
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      echo "停止 MinerU (PID $pid)..."
+      echo "Stopping MinerU (PID $pid)..."
       kill "$pid"
       stopped=1
     fi
@@ -74,41 +74,42 @@ stop_mineru() {
   fi
 
   if port_open "$MINERU_PORT"; then
-    echo "清理残留 MinerU 进程..."
+    echo "Cleaning up a leftover MinerU process..."
     pkill -f "mineru-api --host 127.0.0.1 --port $MINERU_PORT" || true
+    pkill -f "mineru.cli.fast_api --host 127.0.0.1 --port $MINERU_PORT" || true
     stopped=1
   fi
 
   if [[ "$stopped" -eq 0 ]]; then
-    echo "MinerU 未运行。"
+    echo "MinerU is not running."
   fi
 }
 
 stop_autodownload() {
   local windows_shell
   windows_shell="$(resolve_windows_shell)" || {
-    echo "未找到可用的 Windows PowerShell，跳过 AutoDownload 停止步骤。" >&2
+    echo "No usable Windows PowerShell was found. Skipping the Records shutdown step." >&2
     return 0
   }
 
   local win_script
   win_script="$(wslpath -w "$ROOT_DIR/scripts/windows/stop.ps1")"
 
-  echo "停止 Windows 侧 AutoDownload..."
+  echo "Stopping the Records service on Windows..."
   "$windows_shell" \
     -NoProfile \
     -ExecutionPolicy Bypass \
     -File "$win_script"
 
   if port_open "$AUTODOWNLOAD_PORT"; then
-    echo "AutoDownload 端口仍在监听: 127.0.0.1:$AUTODOWNLOAD_PORT" >&2
+    echo "The Records service port is still listening: 127.0.0.1:$AUTODOWNLOAD_PORT" >&2
     return 1
   fi
 
-  echo "AutoDownload 已停止。"
+  echo "The Records service has stopped."
 }
 
 stop_mineru
 stop_autodownload
 
-echo "说明: MCP 使用 stdio 传输，不由 stop.sh 管理。"
+echo "Note: MCP uses stdio transport and is not managed by stop.sh."

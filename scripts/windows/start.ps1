@@ -30,7 +30,7 @@ function Wait-ForHealth {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $runDir = if ($env:AUTOR_RUN_DIR_WIN) { $env:AUTOR_RUN_DIR_WIN } else { Join-Path $repoRoot ".run" }
-$autoDownloadDir = if ($env:AUTOR_AUTODOWNLOAD_WIN_DIR) { $env:AUTOR_AUTODOWNLOAD_WIN_DIR } else { "F:\AutoDownload" }
+$autoDownloadDir = if ($env:AUTOR_AUTODOWNLOAD_WIN_DIR) { $env:AUTOR_AUTODOWNLOAD_WIN_DIR } else { "F:\Records" }
 $port = if ($env:AUTOR_AUTODOWNLOAD_PORT) { [int]$env:AUTOR_AUTODOWNLOAD_PORT } else { 8001 }
 $pidFile = Join-Path $runDir "autodownload.pid"
 $stdoutLog = Join-Path $runDir "autodownload.stdout.log"
@@ -39,11 +39,11 @@ $stderrLog = Join-Path $runDir "autodownload.stderr.log"
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 
 if (-not (Test-Path $autoDownloadDir)) {
-    throw "AutoDownload 目录不存在: $autoDownloadDir"
+    throw "Records repository not found: $autoDownloadDir"
 }
 
 if (Test-Health -Port $port) {
-    Write-Host "AutoDownload 已在运行: http://127.0.0.1:$port"
+    Write-Host "Records service is already running: http://127.0.0.1:$port"
     exit 0
 }
 
@@ -54,10 +54,10 @@ if ($service) {
     }
 
     if (-not (Wait-ForHealth -Port $port)) {
-        throw "AutoDownload Windows Service 已启动，但健康检查未通过。"
+        throw "The AutoDownload Windows service started, but the Records health check failed."
     }
 
-    Write-Host "AutoDownload Windows Service 已启动。"
+    Write-Host "Records Windows service started."
     exit 0
 }
 
@@ -71,7 +71,7 @@ if (Test-Path $pythonExe) {
     $filePath = "uv"
     $arguments = @("run", "python", "-m", "autodownload", "serve", "--port", "$port")
 } else {
-    throw "未找到 AutoDownload 的 .venv\\Scripts\\python.exe，也未找到 uv。"
+    throw "Could not find .venv\\Scripts\\python.exe in the Records repo, and uv is not available."
 }
 
 $startProcessParams = @{
@@ -92,7 +92,7 @@ if (-not (Wait-ForHealth -Port $port)) {
     if (-not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
     }
-    throw "AutoDownload 启动失败，健康检查未通过。"
+    throw "The Records service failed to start because the health check did not pass."
 }
 
-Write-Host "AutoDownload 已启动 (PID $($process.Id))。"
+Write-Host "Records service started (PID $($process.Id))."

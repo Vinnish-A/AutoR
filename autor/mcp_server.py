@@ -21,6 +21,7 @@ import logging.handlers
 import os
 from pathlib import Path
 
+import requests
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("autor")
@@ -39,6 +40,7 @@ def _get_cfg():
     global _cfg
     if _cfg is None:
         from autor.config import load_config
+        from autor.ingest.metadata import configure_metadata_sessions
 
         root = os.environ.get("AUTOR_ROOT")
         if root:
@@ -48,6 +50,11 @@ def _get_cfg():
 
         _init_logging(_cfg)
         _cfg.ensure_dirs()
+        configure_metadata_sessions(
+            _cfg.ingest.contact_email,
+            _cfg.resolved_s2_api_key(),
+            _cfg.resolved_ncbi_api_key(),
+        )
     return _cfg
 
 
@@ -84,7 +91,7 @@ def _init_logging(cfg):
 
 
 def _resolve_paper_dir(paper_ref: str) -> Path:
-    """Resolve paper_ref (dir_name, UUID, or DOI) to its directory.
+    """Resolve paper_ref (dir_name, UUID, DOI, or PMID) to its directory.
 
     Raises:
         ValueError: If the paper is not found.
@@ -114,7 +121,13 @@ def _resolve_paper_dir(paper_ref: str) -> Path:
             data = read_meta(pdir)
         except (ValueError, FileNotFoundError):
             continue
-        if data.get("id") == paper_ref or data.get("doi") == paper_ref:
+        ids = data.get("ids") or {}
+        if (
+            data.get("id") == paper_ref
+            or data.get("doi") == paper_ref
+            or data.get("pmid") == paper_ref
+            or ids.get("pmid") == paper_ref
+        ):
             return pdir
     raise ValueError(f"Paper not found: {paper_ref}")
 
@@ -133,6 +146,22 @@ def _resolve_workspace_ids(workspace: str | None) -> set[str] | None:
 def _error(code: str, message: str, **extra) -> str:
     """Return a JSON error string for MCP tool responses."""
     return json.dumps({"error": code, "message": message, **extra}, ensure_ascii=False)
+
+
+def _summarize_exact_matches(matches: dict[str, list[dict]]) -> dict:
+    """Convert exact-match buckets into a stable MCP-friendly payload."""
+    records = matches.get("records", [])
+    return {
+        "found": bool(records),
+        "ambiguous": len(records) > 1,
+        "match_count": len(records),
+        "matches": {
+            "doi": matches.get("doi", []),
+            "pmid": matches.get("pmid", []),
+            "title": matches.get("title", []),
+        },
+        "records": records,
+    }
 
 
 # ============================================================================
@@ -340,7 +369,7 @@ def show_paper(paper_ref: str, layer: int = 2) -> str:
     Layer 4: metadata + full markdown text
 
     Args:
-        paper_ref: Paper identifier (directory name, UUID, or DOI).
+        paper_ref: Paper identifier (directory name, UUID, DOI, or PMID).
         layer: Detail level 1-4 (default 2).
     """
     try:
@@ -372,13 +401,13 @@ def show_paper(paper_ref: str, layer: int = 2) -> str:
 
 @mcp.tool()
 def lookup_paper(paper_ref: str) -> str:
-    """Look up a paper by UUID, directory name, or DOI in the registry.
+    """Look up a paper by UUID, directory name, DOI, or PMID in the registry.
 
-    Returns basic paper info (id, dir_name, title, doi, year, first_author)
+    Returns basic paper info (id, dir_name, title, doi, pmid, year, first_author)
     or null if not found. Faster than show_paper for simple lookups.
 
     Args:
-        paper_ref: Paper identifier (UUID, directory name, or DOI).
+        paper_ref: Paper identifier (UUID, directory name, DOI, or PMID).
     """
     try:
         from autor.index import lookup_paper as _lookup
@@ -390,6 +419,69 @@ def lookup_paper(paper_ref: str) -> str:
         return _error("index_not_found", "Index not built. Run: autor index")
     except Exception as e:
         _log.exception("lookup_paper failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def identify(
+    doi: str | None = None,
+    pmid: str | None = None,
+    title: str | None = None,
+    workspace: str | None = None,
+) -> str:
+    """Identify exact duplicates before fetching, downloading, or ingesting a paper.
+
+    Call this **before** asking another system to retrieve a paper. It performs
+    exact matching against the local library by DOI, PMID, and/or full title,
+    and can also tell you whether the same match already exists inside a
+    specific workspace.
+
+    Args:
+        doi: Exact DOI to check (case-insensitive).
+        pmid: Exact PubMed ID to check.
+        title: Exact full paper title to check (case-insensitive).
+        workspace: Optional workspace name for a second, workspace-scoped check.
+    """
+    if not any((doi, pmid, title)):
+        return _error("invalid_args", "Specify at least one of doi, pmid, or title.")
+    try:
+        from autor import workspace as ws_mod
+        from autor.index import find_exact_matches
+
+        cfg = _get_cfg()
+        payload = {
+            "query": {"doi": doi, "pmid": pmid, "title": title, "workspace": workspace},
+            "library": _summarize_exact_matches(
+                find_exact_matches(cfg.index_db, doi=doi, pmid=pmid, title=title)
+            ),
+        }
+        if workspace is not None:
+            if not ws_mod.validate_workspace_name(workspace):
+                return _error("invalid_workspace", f"Invalid workspace name: {workspace}")
+            ws_dir = cfg._root / "workspace" / workspace
+            if ws_dir.exists():
+                payload["workspace"] = {
+                    "name": workspace,
+                    "exists": True,
+                    **_summarize_exact_matches(
+                        ws_mod.identify_exact(ws_dir, cfg.index_db, doi=doi, pmid=pmid, title=title)
+                    ),
+                }
+            else:
+                payload["workspace"] = {
+                    "name": workspace,
+                    "exists": False,
+                    "found": False,
+                    "ambiguous": False,
+                    "match_count": 0,
+                    "matches": {"doi": [], "pmid": [], "title": []},
+                    "records": [],
+                }
+        return json.dumps(payload, ensure_ascii=False)
+    except FileNotFoundError:
+        return _error("index_not_found", "Index not built. Run: autor index")
+    except Exception as e:
+        _log.exception("identify failed")
         return _error("internal", str(e))
 
 
@@ -561,7 +653,8 @@ def build_topics(
         nr_topics: Target number of topics (0 = auto).
     """
     try:
-        from autor.topics import build_topics as _build_topics, load_model, get_topic_overview
+        from autor.topics import build_topics as _build_topics
+        from autor.topics import get_topic_overview, load_model
     except ImportError:
         return _error("missing_dependency", "Topics dependencies not installed.",
                        install_hint="pip install autor[topics]")
@@ -604,7 +697,7 @@ def topic_overview() -> str:
     Requires a pre-built topic model (run build_topics first).
     """
     try:
-        from autor.topics import load_model, get_topic_overview
+        from autor.topics import get_topic_overview, load_model
     except ImportError:
         return _error("missing_dependency", "Topics dependencies not installed.",
                        install_hint="pip install autor[topics]")
@@ -629,7 +722,7 @@ def topic_papers(topic_id: int) -> str:
         topic_id: Topic ID from topic_overview results (-1 for outliers).
     """
     try:
-        from autor.topics import load_model, get_topic_papers
+        from autor.topics import get_topic_papers, load_model
     except ImportError:
         return _error("missing_dependency", "Topics dependencies not installed.",
                        install_hint="pip install autor[topics]")
@@ -732,8 +825,56 @@ def workspace_remove(name: str, paper_refs: list[str]) -> str:
 
 
 # ============================================================================
-#  Export & diagnostics (3)
+#  Plot, export & diagnostics (4)
 # ============================================================================
+
+
+@mcp.tool()
+def plot(
+    prompt: str,
+    workspace: str | None = None,
+    name: str | None = None,
+    urls: list[str] | None = None,
+    model: str | None = None,
+    image_size: str | None = None,
+    aspect_ratio: str | None = None,
+) -> str:
+    """Generate an image via Nano Banana and save it into workspace/.
+
+    Args:
+        prompt: Image-generation prompt text.
+        workspace: Optional workspace name; outputs go to ``workspace/<name>/figure/``.
+        name: Optional output filename stem.
+        urls: Optional reference image URLs.
+        model: Optional model override.
+        image_size: Optional size override.
+        aspect_ratio: Optional aspect-ratio override.
+    """
+    try:
+        from autor import workspace as ws_mod
+        from autor.plot import PlotError, generate_plot
+
+        cfg = _get_cfg()
+        if workspace is not None and not ws_mod.validate_workspace_name(workspace):
+            return _error("invalid_workspace", f"Invalid workspace name: {workspace}")
+        summary = generate_plot(
+            prompt,
+            cfg=cfg,
+            workspace=workspace,
+            name=name,
+            urls=urls,
+            model=model,
+            image_size=image_size,
+            aspect_ratio=aspect_ratio,
+        )
+        return json.dumps(summary, ensure_ascii=False)
+    except PlotError as e:
+        return _error("plot_failed", str(e))
+    except requests.RequestException as e:
+        return _error("upstream", str(e))
+    except Exception as e:
+        _log.exception("plot failed")
+        return _error("internal", str(e))
 
 
 @mcp.tool()
@@ -799,7 +940,7 @@ def audit(severity: str | None = None) -> str:
             {"paper_id": i.paper_id, "severity": i.severity, "rule": i.rule, "message": i.message}
             for i in issues
         ]
-        summary = {}
+        summary: dict[str, int] = {}
         for i in issue_dicts:
             summary[i["severity"]] = summary.get(i["severity"], 0) + 1
 
@@ -816,7 +957,7 @@ def setup_check() -> str:
     Returns a structured diagnostic report. Useful for troubleshooting setup issues.
     """
     try:
-        from autor.setup import run_check, format_check_results
+        from autor.setup import format_check_results, run_check
 
         cfg = _get_cfg()
         results = run_check(cfg)

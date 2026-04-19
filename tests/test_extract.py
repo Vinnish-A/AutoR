@@ -91,6 +91,10 @@ class TestExtractDoi:
         text = "文献DOI: 10.1234/test.2023"
         assert _extract_doi(text) == "10.1234/test.2023"
 
+    def test_doi_with_parentheses(self):
+        text = "DOI: 10.1016/S1474-4422(23)00194-1"
+        assert _extract_doi(text) == "10.1016/S1474-4422(23)00194-1"
+
 
 class TestExtractYear:
     def test_copyright_year(self):

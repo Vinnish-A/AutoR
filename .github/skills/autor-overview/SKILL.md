@@ -39,10 +39,8 @@ Summarize them by group. Start with the overview, then go deeper only if the use
 #### Project overview
 - `autor-overview`: explains how to use the software, outlines the available skills, clarifies feature boundaries, and recommends where to start
 
-#### External acquisition / AutoDownload integration
-- `autodownload-overview`: explains how AutoDownload and autor split responsibilities, where the REST boundaries are, which endpoints to use, and which download-stage calls are long-running
-- `autodownload-expand`: fills evidence gaps in an existing workspace with classic papers, recent updates, and counterexamples through a REST-first acquisition loop
-- `autodownload-outline`: builds a new workspace evidence pool from a topic / outline / set of claims through a REST-first acquisition loop
+#### External acquisition / Records service integration
+- `autodownload`: explains how autor works with the Records-backed AutoDownload service, where the REST boundary is, which endpoints to use, and how to build or expand a workspace through external acquisition
 
 #### Knowledge-base management
 - `search`: search the local literature library
@@ -78,8 +76,8 @@ Summarize them by group. Start with the overview, then go deeper only if the use
 Additional note:
 
 - `workspace` is a core autor capability, but it is not currently implemented as a standalone skill file; use `autor ws ...` or the related MCP tools when needed
-- If the task involves external literature acquisition and PDF downloads, switch explicitly to `autodownload-*` instead of treating it as ordinary local-library search
-- For AutoDownload workflows, prefer REST endpoints over CLI. Treat `/download`, `/search`, and `/fetch` as long-running acquisition phases rather than quick metadata calls
+- If the task involves external literature acquisition and PDF downloads, switch explicitly to `autodownload` instead of treating it as ordinary local-library search
+- For Records-service workflows, prefer REST endpoints over CLI. Treat `/download`, `/search`, and `/fetch` as long-running acquisition phases rather than quick metadata calls
 
 ### 3. Other core features
 
@@ -94,7 +92,7 @@ Beyond the skills, explain the underlying system capabilities autor provides:
 - **Multi-source import**: Endnote, Zotero, PDF, Markdown
 - **Workspace isolation**: writing, notes, and drafts are all written under `workspace/`
 - **Multi-agent compatibility**: Claude Code, Copilot, Codex, OpenClaw, Cline, Cursor, Windsurf, and MCP clients
-- **AutoDownload integration**: AutoDownload can be used as an external REST service for PubMed retrieval and PDF downloads
+- **Records service integration**: the Records-backed AutoDownload service can be used as an external REST service for PubMed retrieval and PDF downloads
 - **Multiple document types**: regular papers, theses, technical reports, lecture notes, and other document types
 
 ## Recommended answer structure
@@ -114,8 +112,8 @@ When the user asks a broad question, organize the answer in this order by defaul
 - The user wants to read a paper: switch to `show`
 - The user wants to ingest new literature: switch to `ingest`
 - The user wants topic analysis: switch to `topics` or `explore`
-- The user wants to expand an existing workspace through AutoDownload: switch to `autodownload-overview` or `autodownload-expand`
-- The user wants to build a new workspace from a topic / outline and needs external literature acquisition: switch to `autodownload-overview` or `autodownload-outline`
+- The user wants to expand an existing workspace through external acquisition: switch to `autodownload`
+- The user wants to build a new workspace from a topic / outline and needs external literature acquisition: switch to `autodownload`
 - The user wants to revise structure, classify papers, and design tables before writing a review: switch to `plan`
 - The user wants to formally draft the review text following `/plan`: switch to `write`
 - The user wants a more open-ended review or direct section drafting: switch to `literature-review` or `paper-writing`
