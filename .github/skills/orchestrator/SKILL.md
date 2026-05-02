@@ -29,8 +29,12 @@ This skill acts as the highest-level director for literature review preparation.
 	    - `measure_review_saturation` to distinguish a sparse subfield from a crowded one
 	    - `rank_seminal_papers` and `get_citation_neighborhood` to identify anchor works and citation branches
 	    - `retrieve_topic_literature` and `resolve_literature_identifiers` to normalize candidate PMIDs / DOIs before download
+	Do not run multiple litmap MCP tools concurrently against the same server. Execute them serially, and if a timeout occurs, verify the MCP connection is still healthy before making another litmap call.
 10. **User-Supplied Framework Is a First-Class Input**: If the user provides a framework, logical axes, supporting pillars, or a section skeleton, do not silently replace it with a generic review outline. Treat it as an explicit design prior. The task is to audit it against the evidence, preserve what survives, and only revise it with recorded reasons.
 11. **Heavy Planning Choreography Belongs to the Framework Process**: If the user specifies an execution choreography such as `Orchestrator + Plan + Trials only`, fixed artifacts, staged outputs, exclusion rules, or a machine-readable handoff contract, treat those as part of the framework process rather than optional prompt decoration.
+12. **Subagent Output Integrity Is Mandatory**: Every delegated file-writing task must declare exact output paths and acceptance criteria. After the subagent returns, verify that each required file exists and is non-empty before downstream planning uses it.
+13. **Classify Against Explicit Criteria**: Paper classification prompts must include inclusion/exclusion criteria and the workspace-specific scope definition, not only paper names. Use `dir_name`, title, abstract, DOI/PMID, and available L2/L3 context before labeling a paper off-topic.
+14. **Check Local Workspace Before External Lookup**: Before calling external identifier tools for seed papers, scan `workspace/<name>/papers.json` and local `dir_name`/PMID/DOI matches first. Only unresolved identifiers should trigger external lookup.
 
 If the user is asking for a large, comprehensive review, read `references/full-review-coverage-mode.md` before proceeding.
 

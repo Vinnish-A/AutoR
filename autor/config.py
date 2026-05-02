@@ -30,6 +30,43 @@ from pathlib import Path
 
 import yaml
 
+
+def _split_secret_list(value: str) -> list[str]:
+    """Split a comma/newline separated secret list without logging values."""
+    if not value:
+        return []
+    parts = value.replace("\n", ",").split(",")
+    return _dedupe_nonempty(parts)
+
+
+def _dedupe_nonempty(values) -> list[str]:
+    """Return stripped, non-empty values while preserving order."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        if value is None:
+            continue
+        item = str(value).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _strip_mineru_secret_fields(data: dict) -> dict:
+    """Ignore MinerU token fields from tracked config.yaml data."""
+    ingest = data.get("ingest")
+    if not isinstance(ingest, dict):
+        return data
+    cleaned = dict(data)
+    cleaned_ingest = dict(ingest)
+    cleaned_ingest.pop("mineru_api_key", None)
+    cleaned_ingest.pop("mineru_api_keys", None)
+    cleaned["ingest"] = cleaned_ingest
+    return cleaned
+
+
 # ============================================================================
 #  Config dataclasses
 # ============================================================================
@@ -150,7 +187,9 @@ class IngestConfig:
         extractor: 元数据提取模式，``"regex"`` | ``"auto"`` | ``"llm"`` | ``"robust"``。
         mineru_endpoint: MinerU 本地 API 地址。
         mineru_cloud_url: MinerU 云 API 基础 URL。
-        mineru_api_key: MinerU 云 API 密钥，建议放 config.local.yaml 或环境变量。
+        mineru_mode: MinerU 调度模式，``"local"`` | ``"cloud"`` | ``"hybrid"``。
+        mineru_api_keys: MinerU 云 API 密钥列表，建议放 config.local.yaml 或环境变量。
+        mineru_api_key: 旧版单 MinerU 云 API 密钥，建议放 config.local.yaml 或环境变量。
         mineru_backend_local: 本地 MinerU backend（``pipeline`` | ``vlm-auto-engine`` |
             ``vlm-http-client`` | ``hybrid-auto-engine`` | ``hybrid-http-client``）。
         mineru_model_version_cloud: 云端 MinerU model_version（``pipeline`` | ``vlm`` |
@@ -172,12 +211,22 @@ class IngestConfig:
             建议放 config.local.yaml 或环境变量 ``NCBI_API_KEY``。
         chunk_page_limit: 超长 PDF 自动切分的页数阈值。超过此值的 PDF 在 MinerU
             转换前自动拆分为多个短 PDF，转换后合并为单个 Markdown。
-        mineru_batch_size: MinerU 云 API 每批提交文件数上限，默认 20。
+        mineru_cloud_batch_size: MinerU 云 API 每个 token 每批提交文件数上限，默认 20。
+        mineru_cloud_workers_per_token: 每个 token 的 worker 数。当前默认 1。
+        mineru_cloud_max_inflight_batches_per_token: 每个 token 最大在途 batch 数。
+        mineru_cloud_max_files_per_token_per_min: 每个 token 每分钟提交文件上限。
+        mineru_cloud_max_result_queries_per_token_per_min: 每个 token 每分钟结果查询上限。
+        mineru_cloud_poll_interval_seconds: 云端 batch 结果查询间隔。
+        mineru_cloud_backoff_on_429_seconds: 单个 token 遇到 429 后初始退避秒数。
+        mineru_cloud_backoff_max_seconds: 单个 token 最大退避秒数。
+        mineru_batch_size: 旧配置名，兼容 ``mineru_cloud_batch_size``。
     """
 
     extractor: str = "robust"  # regex | auto | llm | robust
+    mineru_mode: str = "hybrid"  # local | cloud | hybrid
     mineru_endpoint: str = "http://localhost:8000"
     mineru_cloud_url: str = "https://mineru.net/api/v4"
+    mineru_api_keys: list[str] = field(default_factory=list)
     mineru_api_key: str = ""
     mineru_backend_local: str = "pipeline"
     mineru_model_version_cloud: str = "pipeline"
@@ -190,7 +239,15 @@ class IngestConfig:
     s2_api_key: str = ""  # Semantic Scholar API key for higher rate limits
     ncbi_api_key: str = ""  # NCBI E-utilities API key for PubMed lookups
     chunk_page_limit: int = 100  # auto-split PDFs exceeding this page count
-    mineru_batch_size: int = 20  # cloud batch size per request
+    mineru_cloud_batch_size: int = 20  # cloud batch size per token request
+    mineru_cloud_workers_per_token: int = 1
+    mineru_cloud_max_inflight_batches_per_token: int = 1
+    mineru_cloud_max_files_per_token_per_min: int = 35
+    mineru_cloud_max_result_queries_per_token_per_min: int = 600
+    mineru_cloud_poll_interval_seconds: int = 10
+    mineru_cloud_backoff_on_429_seconds: int = 60
+    mineru_cloud_backoff_max_seconds: int = 600
+    mineru_batch_size: int = 20  # legacy alias for cloud batch size
 
 
 @dataclass
@@ -212,13 +269,12 @@ class TranslateConfig:
 
 @dataclass
 class PlotConfig:
-    """Nano Banana 绘图配置。
+    """GPT Image 2 绘图配置。
 
     Attributes:
         host: 绘图服务基础地址。
         api_key: 绘图 API 密钥，建议放 config.local.yaml 或环境变量。
         model: 默认绘图模型。
-        image_size: 默认输出尺寸（``"1K"`` | ``"2K"`` | ``"4K"``）。
         aspect_ratio: 默认输出长宽比（``"auto"`` 或固定比例）。
         timeout: 单个绘图任务总超时（秒）。
         poll_interval: 轮询结果接口的间隔（秒）。
@@ -226,8 +282,7 @@ class PlotConfig:
 
     host: str = "https://grsai.dakka.com.cn"
     api_key: str = ""
-    model: str = "nano-banana-pro"
-    image_size: str = "1K"
+    model: str = "gpt-image-2"
     aspect_ratio: str = "auto"
     timeout: int = 600
     poll_interval: int = 5
@@ -260,7 +315,7 @@ class Config:
         search: 全文检索配置。
         topics: BERTopic 主题建模配置。
         log: 日志与指标配置。
-        plot: Nano Banana 绘图配置。
+        plot: GPT Image 2 绘图配置。
         zotero: Zotero 集成配置。
     """
 
@@ -375,14 +430,36 @@ class Config:
     def resolved_mineru_api_key(self) -> str:
         """按优先级查找 MinerU 云 API key。
 
-        查找顺序: config ``ingest.mineru_api_key`` → 环境变量 ``MINERU_API_KEY``。
+        查找顺序: ``MINERU_API_KEYS`` → config ``ingest.mineru_api_keys`` →
+        config ``ingest.mineru_api_key``。
 
         Returns:
-            API key 字符串，未找到则返回空字符串。
+            第一个 API key 字符串，未找到则返回空字符串。
         """
-        if self.ingest.mineru_api_key:
-            return self.ingest.mineru_api_key
-        return os.environ.get("MINERU_API_KEY", "")
+        keys = self.resolved_mineru_api_keys()
+        if keys:
+            return keys[0]
+        return ""
+
+    def resolved_mineru_api_keys(self) -> list[str]:
+        """按优先级查找 MinerU 云 API key 列表。
+
+        查找顺序:
+        1. 环境变量 ``MINERU_API_KEYS``（逗号分隔）
+        2. config.local.yaml ``ingest.mineru_api_keys``
+        3. config.local.yaml ``ingest.mineru_api_key``（旧单 key）
+
+        Returns:
+            去重后的 API key 列表，未找到则返回空列表。
+        """
+        env_keys = _split_secret_list(os.environ.get("MINERU_API_KEYS", ""))
+        if env_keys:
+            return env_keys
+        cfg_keys = _dedupe_nonempty(self.ingest.mineru_api_keys)
+        if cfg_keys:
+            return cfg_keys
+        single = (self.ingest.mineru_api_key or "").strip()
+        return [single] if single else []
 
     def resolved_s2_api_key(self) -> str:
         """按优先级查找 Semantic Scholar API key。
@@ -452,6 +529,7 @@ def load_config(config_path: Path | None = None) -> Config:
         root = config_path.parent
         with open(config_path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
+        data = _strip_mineru_secret_fields(data)
 
         # config.local.yaml overrides config.yaml
         local_path = config_path.parent / "config.local.yaml"
@@ -535,8 +613,10 @@ def _build_config(data: dict, root: Path) -> Config:
 
     ingest = IngestConfig(
         extractor=ingest_data.get("extractor", "robust"),
+        mineru_mode=ingest_data.get("mineru_mode", "hybrid"),
         mineru_endpoint=ingest_data.get("mineru_endpoint", "http://localhost:8000"),
         mineru_cloud_url=ingest_data.get("mineru_cloud_url", "https://mineru.net/api/v4"),
+        mineru_api_keys=_dedupe_nonempty(ingest_data.get("mineru_api_keys") or []),
         mineru_api_key=ingest_data.get("mineru_api_key") or "",
         mineru_backend_local=ingest_data.get("mineru_backend_local", "pipeline"),
         mineru_model_version_cloud=ingest_data.get("mineru_model_version_cloud", "pipeline"),
@@ -548,7 +628,25 @@ def _build_config(data: dict, root: Path) -> Config:
         contact_email=ingest_data.get("contact_email") or "",
         s2_api_key=ingest_data.get("s2_api_key") or "",
         ncbi_api_key=ingest_data.get("ncbi_api_key") or "",
-        mineru_batch_size=int(ingest_data.get("mineru_batch_size") or 20),
+        mineru_cloud_batch_size=int(
+            ingest_data.get("mineru_cloud_batch_size") or ingest_data.get("mineru_batch_size") or 20
+        ),
+        mineru_cloud_workers_per_token=max(1, int(ingest_data.get("mineru_cloud_workers_per_token") or 1)),
+        mineru_cloud_max_inflight_batches_per_token=max(
+            1, int(ingest_data.get("mineru_cloud_max_inflight_batches_per_token") or 1)
+        ),
+        mineru_cloud_max_files_per_token_per_min=max(
+            1, int(ingest_data.get("mineru_cloud_max_files_per_token_per_min") or 35)
+        ),
+        mineru_cloud_max_result_queries_per_token_per_min=max(
+            1, int(ingest_data.get("mineru_cloud_max_result_queries_per_token_per_min") or 600)
+        ),
+        mineru_cloud_poll_interval_seconds=max(1, int(ingest_data.get("mineru_cloud_poll_interval_seconds") or 10)),
+        mineru_cloud_backoff_on_429_seconds=max(
+            1, int(ingest_data.get("mineru_cloud_backoff_on_429_seconds") or 60)
+        ),
+        mineru_cloud_backoff_max_seconds=max(1, int(ingest_data.get("mineru_cloud_backoff_max_seconds") or 600)),
+        mineru_batch_size=int(ingest_data.get("mineru_batch_size") or ingest_data.get("mineru_cloud_batch_size") or 20),
         chunk_page_limit=int(ingest_data.get("chunk_page_limit") or 100),
     )
 
@@ -603,8 +701,7 @@ def _build_config(data: dict, root: Path) -> Config:
     plot = PlotConfig(
         host=os.environ.get("AUTOR_PLOT_HOST") or plot_data.get("host", "https://grsai.dakka.com.cn"),
         api_key=plot_data.get("api_key") or "",
-        model=os.environ.get("AUTOR_PLOT_MODEL") or plot_data.get("model", "nano-banana-pro"),
-        image_size=os.environ.get("AUTOR_PLOT_IMAGE_SIZE") or plot_data.get("image_size", "1K"),
+        model=os.environ.get("AUTOR_PLOT_MODEL") or plot_data.get("model", "gpt-image-2"),
         aspect_ratio=os.environ.get("AUTOR_PLOT_ASPECT_RATIO") or plot_data.get("aspect_ratio", "auto"),
         timeout=max(1, int(plot_data.get("timeout", 600))),
         poll_interval=max(1, int(plot_data.get("poll_interval", 5))),

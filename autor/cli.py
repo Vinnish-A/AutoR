@@ -617,6 +617,8 @@ def cmd_pipeline(args: argparse.Namespace, cfg) -> None:
         "max_retries": args.max_retries,
         "rebuild": args.rebuild,
     }
+    if args.workspace_filter:
+        opts["workspace_filter"] = args.workspace_filter
     if args.inbox:
         opts["inbox_dir"] = Path(args.inbox).resolve()
     if args.papers:
@@ -627,7 +629,7 @@ def cmd_pipeline(args: argparse.Namespace, cfg) -> None:
 
 def cmd_enrich_l3(args: argparse.Namespace, cfg) -> None:
     from autor.loader import enrich_l3
-    from autor.papers import iter_paper_dirs
+    from autor.papers import iter_paper_dirs, read_meta
 
     papers_dir = cfg.papers_dir
 
@@ -660,6 +662,11 @@ def cmd_enrich_l3(args: argparse.Namespace, cfg) -> None:
             ok += 1
         else:
             fail += 1
+            meta = read_meta(json_path.parent)
+            status = meta.get("l3_last_attempt_status") or "failed"
+            stage = meta.get("l3_last_attempt_stage") or "unknown"
+            reason = meta.get("l3_last_attempt_reason") or "未知原因"
+            ui(f"  失败 [{stage}/{status}]: {reason}")
 
     if args.all or len(targets) > 1:
         ui(f"\n完成: {ok} 成功 | {fail} 失败 | {skip} 跳过")
@@ -1477,7 +1484,6 @@ def cmd_plot(args: argparse.Namespace, cfg) -> None:
             host=args.host,
             api_key=args.api_key,
             model=args.model,
-            image_size=args.image_size,
             aspect_ratio=args.aspect_ratio,
             timeout=args.timeout,
             poll_interval=args.poll_interval,
@@ -1576,6 +1582,17 @@ def _cmd_export_bibtex(args: argparse.Namespace, cfg) -> None:
     from autor.export import export_bibtex
 
     paper_ids = args.paper_ids if args.paper_ids else None
+    if args.workspace:
+        from autor import workspace as workspace_mod
+
+        if not workspace_mod.validate_workspace_name(args.workspace):
+            _log.error("非法工作区名称: %s", args.workspace)
+            sys.exit(1)
+        ws_dir = cfg._root / "workspace" / args.workspace
+        paper_ids = list(workspace_mod.read_dir_names(ws_dir, cfg.index_db))
+        if not paper_ids:
+            ui("工作区为空")
+            return
     if not paper_ids and not args.all:
         _log.error("请指定论文 ID 或 --all")
         sys.exit(1)
@@ -1604,6 +1621,62 @@ def _cmd_export_bibtex(args: argparse.Namespace, cfg) -> None:
 # ============================================================================
 
 
+def cmd_identify(args: argparse.Namespace, cfg) -> None:
+    """Check canonical PMIDs/DOIs against the local library and optional workspace."""
+    import json
+    import re
+
+    from autor import workspace as workspace_mod
+    from autor.index import lookup_paper
+
+    identifiers: list[str] = []
+    identifiers.extend(args.pmids or [])
+    identifiers.extend(args.dois or [])
+
+    for file_arg in [args.pmid_list, args.seed_file]:
+        if not file_arg:
+            continue
+        text = Path(file_arg).read_text(encoding="utf-8")
+        identifiers.extend(re.findall(r"\b\d{5,9}\b", text))
+        identifiers.extend(re.findall(r"10\.\d{4,9}/[^\s,;\"'<>]+", text, flags=re.IGNORECASE))
+
+    # Preserve order while removing duplicates.
+    identifiers = list(dict.fromkeys(i.strip() for i in identifiers if i and i.strip()))
+    if not identifiers:
+        ui("未提供 PMID/DOI；请使用 --pmid、--doi、--pmid-list 或 --seed-file")
+        return
+
+    workspace_ids: set[str] | None = None
+    if args.workspace:
+        if not workspace_mod.validate_workspace_name(args.workspace):
+            ui(f"非法工作区名称: {args.workspace}")
+            return
+        workspace_ids = workspace_mod.read_paper_ids(cfg._root / "workspace" / args.workspace)
+
+    records: list[dict] = []
+    missing: list[str] = []
+    for ident in identifiers:
+        record = lookup_paper(cfg.index_db, ident)
+        if not record:
+            missing.append(ident)
+            continue
+        payload = dict(record)
+        payload["query"] = ident
+        if workspace_ids is not None:
+            payload["in_workspace"] = record["id"] in workspace_ids
+        records.append(payload)
+
+    result = {
+        "count": len(identifiers),
+        "found_count": len(records),
+        "missing_count": len(missing),
+        "workspace": args.workspace,
+        "records": records,
+        "missing": missing,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
 def cmd_ws(args: argparse.Namespace, cfg) -> None:
     from autor import workspace
 
@@ -1612,7 +1685,7 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
 
     # Validate workspace-name style arguments in CLI layer to prevent path traversal.
     names_to_check: list[str] = []
-    if action in {"init", "add", "remove", "show", "search", "export", "export-meta"}:
+    if action in {"init", "add", "remove", "show", "search", "export", "export-meta", "dedup"}:
         names_to_check.append(args.name)
     elif action == "rename":
         names_to_check.extend([args.old_name, args.new_name])
@@ -1657,6 +1730,16 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
             if not resolved:
                 ui("主库中没有论文")
                 return
+            if args.scope_filter:
+                resolved, rejected = workspace.filter_resolved_by_scope(
+                    resolved,
+                    cfg.papers_dir,
+                    args.scope_filter,
+                    cfg=cfg,
+                )
+                ui(f"范围过滤: 保留 {len(resolved)} 篇，排除 {len(rejected)} 篇")
+                for e in rejected:
+                    ui(f"  ! {e['dir_name']} [{e.get('scope_decision')}: {e.get('scope_reason')}]")
             added = workspace.add(ws_dir, [], cfg.index_db, resolved=resolved)
             ui(f"已添加 {len(added)} 篇论文到 {args.name}")
             for e in added:
@@ -1699,7 +1782,28 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
             ui("未指定论文引用")
             return
 
-        added = workspace.add(ws_dir, paper_refs, cfg.index_db)
+        if args.scope_filter:
+            from autor.index import lookup_paper
+
+            resolved = []
+            for ref in paper_refs:
+                record = lookup_paper(cfg.index_db, ref)
+                if not record:
+                    ui(f"无法解析论文引用: {ref}")
+                    continue
+                resolved.append({"id": record["id"], "dir_name": record["dir_name"]})
+            resolved, rejected = workspace.filter_resolved_by_scope(
+                resolved,
+                cfg.papers_dir,
+                args.scope_filter,
+                cfg=cfg,
+            )
+            ui(f"范围过滤: 保留 {len(resolved)} 篇，排除 {len(rejected)} 篇")
+            for e in rejected:
+                ui(f"  ! {e['dir_name']} [{e.get('scope_decision')}: {e.get('scope_reason')}]")
+            added = workspace.add(ws_dir, [], cfg.index_db, resolved=resolved)
+        else:
+            added = workspace.add(ws_dir, paper_refs, cfg.index_db)
         ui(f"已添加 {len(added)} 篇论文到 {args.name}")
         for e in added:
             ui(f"  + {e['dir_name']}")
@@ -1720,6 +1824,13 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
             ws_dir = ws_root / name
             ids = workspace.read_paper_ids(ws_dir)
             ui(f"  {name}（{len(ids)} 篇论文）")
+
+    elif action == "dedup":
+        ws_dir = ws_root / args.name
+        result = workspace.dedup(ws_dir, cfg.index_db)
+        ui(f"工作区清理完成: 保留 {result['kept_count']} 篇，移除 {result['removed_count']} 条")
+        for e in result["removed"]:
+            ui(f"  - {e.get('dir_name', e.get('id'))} [{e.get('dedup_reason')}]")
 
     elif action == "show":
         ws_dir = ws_root / args.name
@@ -2580,8 +2691,8 @@ def cmd_attach_pdf(args: argparse.Namespace, cfg) -> None:
     if check_server(cfg.ingest.mineru_endpoint):
         result = convert_pdf(dest_pdf, mineru_opts)
     else:
-        api_key = cfg.resolved_mineru_api_key()
-        if not api_key:
+        api_keys = cfg.resolved_mineru_api_keys()
+        if not api_keys:
             ui("错误：MinerU 不可达且无云 API key")
             sys.exit(1)
         from autor.ingest.mineru import convert_pdf_cloud
@@ -2589,7 +2700,7 @@ def cmd_attach_pdf(args: argparse.Namespace, cfg) -> None:
         result = convert_pdf_cloud(
             dest_pdf,
             mineru_opts,
-            api_key=api_key,
+            api_key=api_keys[0],
             cloud_url=cfg.ingest.mineru_cloud_url,
         )
 
@@ -2917,6 +3028,19 @@ def main() -> None:
         "--workspace",
         help="将成功入库的论文自动添加到指定工作区（如果工作区不存在则自动创建）",
     )
+    p_pipe.add_argument(
+        "--workspace-filter",
+        help="添加到工作区前用标题+摘要检查主题范围（优先 LLM，失败时启用保守启发式）",
+    )
+
+    # --- identify ---
+    p_ident = sub.add_parser("identify", help="检查 PMID/DOI 种子文献在本地库和工作区中的覆盖情况")
+    p_ident.set_defaults(func=cmd_identify)
+    p_ident.add_argument("--pmid", dest="pmids", action="append", help="待检查 PMID（可重复）")
+    p_ident.add_argument("--doi", dest="dois", action="append", help="待检查 DOI（可重复）")
+    p_ident.add_argument("--pmid-list", help="包含 PMID 的文本文件")
+    p_ident.add_argument("--seed-file", help="包含 PMID/DOI 种子文献的文本文件")
+    p_ident.add_argument("--workspace", "-w", help="同时检查是否已在指定工作区中")
 
     # --- refetch ---
     p_refetch = sub.add_parser("refetch", help="重新查询 API 补全引用量等字段")
@@ -3052,6 +3176,7 @@ def main() -> None:
     p_eb = p_export_sub.add_parser("bibtex", help="导出 BibTeX 格式（LaTeX 引用）")
     p_eb.add_argument("paper_ids", nargs="*", help="论文目录名（可多个）")
     p_eb.add_argument("--all", action="store_true", help="导出全部论文")
+    p_eb.add_argument("--workspace", "-w", help="导出指定工作区的全部论文")
     p_eb.add_argument("--year", type=str, default=None, help="年份过滤：2023 / 2020-2024")
     p_eb.add_argument("--journal", type=str, default=None, help="期刊名过滤（模糊匹配）")
     p_eb.add_argument("-o", "--output", type=str, default=None, help="输出文件路径（省略则输出到屏幕）")
@@ -3085,7 +3210,7 @@ def main() -> None:
     p_ed.add_argument("--title", type=str, default=None, help="文档标题（可选，插入为一级标题）")
 
     # --- ws (workspace) ---
-    p_ws = sub.add_parser("ws", help="工作区论文子集管理")
+    p_ws = sub.add_parser("ws", aliases=["workspace"], help="工作区论文子集管理")
     p_ws.set_defaults(func=cmd_ws)
     p_ws_sub = p_ws.add_subparsers(dest="ws_action", required=True)
 
@@ -3100,6 +3225,7 @@ def main() -> None:
     p_ws_add_batch.add_argument("--topic", dest="add_topic", type=int, default=None, help="按主题 ID 批量添加")
     p_ws_add_batch.add_argument("--all", dest="add_all", action="store_true", default=False, help="添加全库论文")
     p_ws_add.add_argument("--top", type=int, default=None, help="限制 --search 返回条数")
+    p_ws_add.add_argument("--filter", dest="scope_filter", help="添加前按主题范围过滤（优先 LLM，失败时启发式）")
     _add_filter_args(p_ws_add)
 
     p_ws_rm = p_ws_sub.add_parser("remove", help="从工作区移除论文")
@@ -3107,6 +3233,9 @@ def main() -> None:
     p_ws_rm.add_argument("paper_refs", nargs="+", help="论文引用（UUID / 目录名 / DOI）")
 
     p_ws_list = p_ws_sub.add_parser("list", help="列出所有工作区")
+
+    p_ws_dedup = p_ws_sub.add_parser("dedup", help="清理工作区中的 DUP 条目和重复 UUID")
+    p_ws_dedup.add_argument("name", help="工作区名称")
 
     p_ws_show = p_ws_sub.add_parser("show", help="查看工作区中的论文")
     p_ws_show.add_argument("name", help="工作区名称")
@@ -3177,7 +3306,7 @@ def main() -> None:
     p_cc.add_argument("--ws", type=str, default=None, help="在指定工作区范围内验证")
 
     # --- plot ---
-    p_plot = sub.add_parser("plot", help="调用 Nano Banana 生成图片并保存到 workspace/")
+    p_plot = sub.add_parser("plot", help="调用 GPT Image 2 生成图片并保存到 workspace/")
     p_plot.set_defaults(func=cmd_plot)
     p_plot.add_argument("prompt", nargs="*", help="绘图提示词（省略时可用 --prompt-file）")
     p_plot.add_argument("--prompt-file", type=str, default=None, help="从文件读取完整 prompt")
@@ -3188,10 +3317,9 @@ def main() -> None:
     p_plot.add_argument("--host", type=str, default=None, help="临时覆盖 plot.host")
     p_plot.add_argument("--api-key", type=str, default=None, help="临时覆盖 plot.api_key")
     p_plot.add_argument("--model", type=str, default=None, help="临时覆盖绘图模型（默认读 config plot.model）")
-    p_plot.add_argument("--image-size", choices=["1K", "2K", "4K"], default=None, help="输出尺寸（默认读配置）")
     p_plot.add_argument(
         "--aspect-ratio",
-        choices=["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "1:4", "4:1", "1:8", "8:1"],
+        choices=["auto", "1:1", "3:2", "2:3", "16:9", "9:16", "5:4", "4:5", "4:3", "3:4", "21:9", "9:21", "1:3", "3:1", "2:1", "1:2"],
         default=None,
         help="输出长宽比（默认读配置）",
     )

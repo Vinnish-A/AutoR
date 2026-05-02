@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from autor.config import Config
@@ -56,6 +56,133 @@ L3_SKIP_TYPES = frozenset(
         "patent",
     }
 )
+
+
+@dataclass(frozen=True)
+class L3AttemptResult:
+    """Structured outcome for a single L3 extraction path."""
+
+    success: bool
+    status: str
+    stage: str
+    reason: str
+    conclusion: str | None = None
+    method: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+
+
+@dataclass(frozen=True)
+class L3ValidationResult:
+    """Validation result for a candidate conclusion excerpt."""
+
+    status: str
+    reason: str
+    cleaned: str | None = None
+
+
+_CONCLUSION_TITLE_PATTERNS = (
+    "conclusion",
+    "conclusions",
+    "concluding",
+    "concluding remarks",
+    "concluding discussion",
+    "summary",
+    "summary and outlook",
+    "summary and perspective",
+    "discussion and conclusion",
+    "discussion and conclusions",
+    "conclusion and outlook",
+    "conclusions and outlook",
+    "conclusion and perspectives",
+    "future directions",
+    "future work",
+    "outlook",
+    "final remarks",
+    "closing remarks",
+    "closing",
+    "结论",
+    "总结",
+    "结语",
+    "小结",
+    "讨论与结论",
+    "结论与展望",
+    "总结与展望",
+    "研究结论",
+)
+_CONCLUSION_KEYWORDS = re.compile(
+    "|".join(re.escape(term) for term in sorted(_CONCLUSION_TITLE_PATTERNS, key=len, reverse=True)),
+    re.IGNORECASE,
+)
+_KNOWN_SECTION_TITLES = {
+    "abstract",
+    "background",
+    "introduction",
+    "materials and methods",
+    "methods",
+    "method",
+    "results",
+    "results and discussion",
+    "discussion",
+    "discussion and conclusion",
+    "discussion and conclusions",
+    "conclusion",
+    "conclusions",
+    "concluding remarks",
+    "summary",
+    "summary and outlook",
+    "outlook",
+    "references",
+    "bibliography",
+    "acknowledgments",
+    "acknowledgements",
+    "funding",
+    "appendix",
+    "supplementary information",
+    "supplementary material",
+    "data availability",
+    "author contributions",
+    "conflict of interest",
+    "declaration of competing interest",
+}
+_KNOWN_SECTION_TITLES_ZH = {
+    "摘要",
+    "引言",
+    "前言",
+    "绪论",
+    "方法",
+    "材料与方法",
+    "结果",
+    "讨论",
+    "结论",
+    "总结",
+    "结语",
+    "小结",
+    "讨论与结论",
+    "结论与展望",
+    "总结与展望",
+    "参考文献",
+    "致谢",
+    "附录",
+}
+_HEADING_TYPE_HINTS = {
+    "head",
+    "heading",
+    "header",
+    "title",
+    "section",
+    "chapter",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+}
+_MAX_PLAIN_HEADING_LEN = 160
+_MAX_HEADING_WORDS = 24
+_FALLBACK_WINDOW_LINES = 320
+_FALLBACK_WINDOW_OVERLAP = 100
+_FALLBACK_SCAN_FRACTION = 0.40
+_FALLBACK_MAX_WINDOWS = 6
 
 
 # ============================================================================
@@ -400,6 +527,85 @@ def append_notes(paper_dir: Path, section: str) -> None:
 
 
 # ============================================================================
+#  L3 helpers
+# ============================================================================
+
+
+def _ok(
+    stage: str,
+    method: str,
+    conclusion: str,
+    *,
+    reason: str = "",
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> L3AttemptResult:
+    return L3AttemptResult(
+        success=True,
+        status="ok",
+        stage=stage,
+        reason=reason or "提取成功",
+        conclusion=conclusion,
+        method=method,
+        start_line=start_line,
+        end_line=end_line,
+    )
+
+
+def _fail(
+    stage: str,
+    status: str,
+    reason: str,
+    *,
+    method: str | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> L3AttemptResult:
+    return L3AttemptResult(
+        success=False,
+        status=status,
+        stage=stage,
+        reason=reason,
+        method=method,
+        start_line=start_line,
+        end_line=end_line,
+    )
+
+
+def _write_l3_attempt_metadata(data: dict, result: L3AttemptResult) -> None:
+    """Persist the latest L3 extraction attempt outcome into metadata."""
+    data["l3_last_attempt_status"] = result.status
+    data["l3_last_attempt_stage"] = result.stage
+    data["l3_last_attempt_reason"] = result.reason
+    data["l3_last_attempt_method"] = result.method or result.stage
+    data["l3_last_attempt_at"] = datetime.now().isoformat(timespec="seconds")
+    if result.start_line is not None:
+        data["l3_last_attempt_start_line"] = result.start_line
+    else:
+        data.pop("l3_last_attempt_start_line", None)
+    if result.end_line is not None:
+        data["l3_last_attempt_end_line"] = result.end_line
+    else:
+        data.pop("l3_last_attempt_end_line", None)
+
+
+def _select_l3_failure(attempts: list[L3AttemptResult], *, header_count: int) -> L3AttemptResult:
+    """Choose the most informative final failure from attempted paths."""
+    if not attempts:
+        return _fail("extract", "bad_structure", "未执行任何 L3 提取路径")
+
+    if header_count <= 1 and all(a.status in {"no_conclusion", "bad_structure"} for a in attempts):
+        return _fail("primary", "bad_structure", f"正文结构不足：仅检测到 {header_count} 个候选节标题")
+
+    for status in ("validation_reject", "llm_error", "too_short", "bad_structure", "no_conclusion"):
+        for attempt in reversed(attempts):
+            if attempt.status == status:
+                return attempt
+
+    return attempts[-1]
+
+
+# ============================================================================
 #  TOC extraction
 # ============================================================================
 
@@ -437,9 +643,9 @@ def enrich_toc(
         return True
 
     lines = md_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    raw_headers = _extract_headers(lines)
+    raw_headers = _extract_headers(lines, md_path=md_path)
 
-    _log.debug("regex found %d headers", len(raw_headers))
+    _log.debug("header extractor found %d candidates", len(raw_headers))
 
     # Threshold: if many headers, rules are more reliable than LLM
     # (LLM struggles to output 100+ JSON entries without format errors)
@@ -456,10 +662,10 @@ def enrich_toc(
 
     if toc is None:
         # LLM path for normal papers
-        _log.debug("sending %d headers to LLM", len(raw_headers))
+        _log.debug("sending %d heading candidates to LLM", len(raw_headers))
         prompt = (
-            "The following are ALL lines starting with '#' extracted from an academic paper "
-            "markdown file (converted from PDF by MinerU). Some are real section headers; "
+            "The following are ALL heading candidates extracted from an academic paper "
+            "markdown file (and optional MinerU structure artifacts). Some are real section headers; "
             "others are NOISE to discard: author running headers (e.g. '# Smith and others'), "
             "journal name headers (e.g. '# Journal of Fluid Mechanics'), repeated paper titles, "
             "or publisher metadata (e.g. '# ARTICLEINFO', '# AFFILIATIONS', '# Articles You May Be Interested In').\n\n"
@@ -549,6 +755,16 @@ def enrich_l3(
         data.pop("l3_conclusion", None)  # clear stale conclusion if any
         data["l3_extraction_method"] = "skipped"
         data["l3_extracted_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_l3_attempt_metadata(
+            data,
+            L3AttemptResult(
+                success=True,
+                status="skipped",
+                stage="skip",
+                reason=f"paper_type={paper_type}",
+                method="skipped",
+            ),
+        )
         write_meta(paper_d, data)
         return True
 
@@ -558,37 +774,70 @@ def enrich_l3(
 
     lines = md_path.read_text(encoding="utf-8", errors="replace").splitlines()
 
-    conclusion = method = None
+    conclusion_result: L3AttemptResult | None = None
+    attempts: list[L3AttemptResult] = []
+    headers: list[dict] = []
 
     # --- Try locating conclusion via existing TOC (skip first LLM call) ---
     toc = data.get("toc")
+    if not toc:
+        _log.debug("[TOC] missing TOC, attempting automatic TOC extraction before L3")
+        if enrich_toc(json_path, md_path, config, force=False, inspect=inspect):
+            data = read_meta(paper_d)
+            toc = data.get("toc")
+
     if toc:
-        conclusion, method = _l3_from_toc(lines, toc, config, max_retries, inspect)
+        toc_result = _l3_from_toc(lines, toc, config, max_retries, inspect)
+        attempts.append(toc_result)
+        if toc_result.success:
+            conclusion_result = toc_result
 
     # --- Primary path (when TOC is unavailable) ---
-    if conclusion is None:
-        headers = _extract_headers(lines)
+    if conclusion_result is None:
+        headers = _extract_headers(lines, md_path=md_path)
         _log.debug("[Primary] found %d headers", len(headers))
         for h in headers:
-            _log.debug("  line %4d  %s %s", h["line"], "#" * h["level"], h["text"])
+            _log.debug(
+                "  line %4d  %s %s [%s]",
+                h["line"],
+                "#" * h["level"],
+                h["text"],
+                h.get("source", "?"),
+            )
         if headers:
-            conclusion, method = _primary_path(lines, headers, config, max_retries, inspect)
+            primary_result = _primary_path(lines, headers, config, max_retries, inspect)
+        else:
+            primary_result = _fail("primary", "bad_structure", "未识别到可用节标题", method="primary")
+        attempts.append(primary_result)
+        if primary_result.success:
+            conclusion_result = primary_result
 
     # --- Fallback path ---
-    if conclusion is None:
+    if conclusion_result is None:
         _log.debug("[Fallback] Primary path failed, switching to fallback")
-        conclusion, method = _fallback_path(lines, config, max_retries, inspect)
+        fallback_result = _fallback_path(lines, config, max_retries, inspect)
+        attempts.append(fallback_result)
+        if fallback_result.success:
+            conclusion_result = fallback_result
 
-    if conclusion is None:
-        _log.error("all paths failed to extract conclusion")
+    if conclusion_result is None:
+        failure = _select_l3_failure(attempts, header_count=len(headers))
+        _write_l3_attempt_metadata(data, failure)
+        write_meta(paper_d, data)
+        _log.error("all paths failed to extract conclusion (%s/%s): %s", failure.stage, failure.status, failure.reason)
         return False
 
     # Write back
-    data["l3_conclusion"] = conclusion
-    data["l3_extraction_method"] = method
+    data["l3_conclusion"] = conclusion_result.conclusion
+    data["l3_extraction_method"] = conclusion_result.method
     data["l3_extracted_at"] = datetime.now().isoformat(timespec="seconds")
+    _write_l3_attempt_metadata(data, conclusion_result)
     write_meta(paper_d, data)
-    _log.debug("L3 written to JSON (method: %s, %d chars)", method, len(conclusion))
+    _log.debug(
+        "L3 written to JSON (method: %s, %d chars)",
+        conclusion_result.method,
+        len(conclusion_result.conclusion or ""),
+    )
     return True
 
 
@@ -596,27 +845,24 @@ def enrich_l3(
 #  L3 from TOC (no extra LLM call for header identification)
 # ============================================================================
 
-_CONCLUSION_KEYWORDS = re.compile(r"\b(conclusion|conclusions|concluding|summary|closing)\b", re.IGNORECASE)
-
-
 def _l3_from_toc(
     lines: list[str],
     toc: list[dict],
     config: Config,
     max_retries: int,
     inspect: bool,
-) -> tuple[str | None, str | None]:
+) -> L3AttemptResult:
     """用已有 TOC 定位结论节，Python 截取，LLM 校验。"""
     # Find conclusion entry in TOC
     conclusion_entry = None
     for entry in toc:
-        if _CONCLUSION_KEYWORDS.search(entry.get("title", "")):
+        if _is_conclusion_title(entry.get("title", "")):
             conclusion_entry = entry
             break
 
     if not conclusion_entry:
         _log.debug("[TOC] no conclusion section found in TOC, switching to Primary")
-        return None, None
+        return _fail("toc", "no_conclusion", "TOC 中未找到结论节标题", method="toc")
 
     start_line = conclusion_entry["line"]
     _log.debug("[TOC] found conclusion: line %d %s", start_line, conclusion_entry["title"])
@@ -634,12 +880,26 @@ def _l3_from_toc(
     extracted = _slice_lines(lines, start_line, end_line)
     _log.debug("[TOC] extracted lines %d-%s, %d chars", start_line, end_line or "EOF", len(extracted))
 
-    cleaned, reason = _validate_and_clean(extracted, config)
-    _log.debug("[TOC] validate: %s %s", "PASS" if cleaned else "FAIL", reason)
-    if cleaned:
-        return cleaned, "toc"
+    validation = _validate_with_retries(extracted, config, attempts=max_retries + 1)
+    _log.debug("[TOC] validate: %s %s", "PASS" if validation.cleaned else "FAIL", validation.reason)
+    if validation.cleaned:
+        return _ok(
+            "toc",
+            "toc",
+            validation.cleaned,
+            reason=validation.reason,
+            start_line=start_line,
+            end_line=end_line,
+        )
 
-    return None, None
+    return _fail(
+        "toc",
+        validation.status,
+        validation.reason,
+        method="toc",
+        start_line=start_line,
+        end_line=end_line,
+    )
 
 
 # ============================================================================
@@ -649,13 +909,13 @@ def _l3_from_toc(
 
 _REAL_SECTION_RE = re.compile(
     r"^(?:"
-    r"\d[\d.]*[\s.]|"  # 阿拉伯数字编号: 1, 1.1, 2., etc.
+    r"\d[\d.．]*[\s.．]|"  # Arabic numbering: 1, 1.1, 2．, etc.
     r"[IVX]+[\s.)]|"  # 罗马数字: I., II., IV.
     r"[A-F][\s.)]|"  # 字母编号: A., B.
-    r"(?:abstract|introduction|method|result|discussion|"
-    r"conclusion|concluding|summary|reference|bibliography|"
-    r"appendix|acknowledge|funding|credit|declaration|"
-    r"data\s+avail|author\s+contrib|conflict)\b"
+    r"(?:abstract|background|introduction|materials?|methods?|results?|discussion|"
+    r"discussion\s+and\s+conclusions?|conclusions?|concluding|summary|outlook|future|"
+    r"reference|bibliography|appendix|supplementary|acknowledge|funding|credit|"
+    r"declaration|ethics|data\s+avail|author\s+contrib|conflict)\b"
     r")",
     re.IGNORECASE,
 )
@@ -663,16 +923,103 @@ _REAL_SECTION_RE = re.compile(
 
 def _is_real_section(title: str) -> bool:
     """判断标题是否为真实节标题（非 running header）。"""
-    return bool(_REAL_SECTION_RE.match(title.strip()))
+    stripped = title.strip()
+    return bool(_REAL_SECTION_RE.match(stripped)) or _is_known_section_title(stripped)
 
 
-def _extract_headers(lines: list[str]) -> list[dict]:
-    """提取所有 # 标题及行号（1-indexed）。"""
+def _extract_headers(lines: list[str], *, md_path: Path | None = None) -> list[dict]:
+    """Collect heading candidates from markdown, plain text, and MinerU assets."""
+    groups = [
+        _extract_markdown_headers(lines),
+        _extract_plaintext_headers(lines),
+    ]
+    if md_path is not None:
+        groups.append(_extract_asset_headers(lines, md_path))
+
+    merged: dict[tuple[int, str], dict[str, Any]] = {}
+    priority = {"markdown": 0, "plaintext": 1}
+    for headers in groups:
+        for header in headers:
+            clean_text = _clean_heading_text(header["text"])
+            if not clean_text:
+                continue
+            key = (header["line"], _normalize_heading_text(clean_text))
+            current = merged.get(key)
+            new_pri = priority.get(header.get("source", ""), 2)
+            cur_pri = priority.get(current.get("source", ""), 99) if current else 99
+            if current is None or new_pri < cur_pri:
+                merged[key] = {
+                    "line": header["line"],
+                    "level": max(1, min(int(header.get("level", 1)), 3)),
+                    "text": clean_text,
+                    "source": header.get("source", "unknown"),
+                }
+
+    return sorted(merged.values(), key=lambda h: (h["line"], h["level"], h["text"].lower()))
+
+
+def _extract_markdown_headers(lines: list[str]) -> list[dict]:
     headers = []
     for i, line in enumerate(lines, start=1):
-        m = re.match(r"^(#{1,4})\s+(.+)", line.rstrip())
+        m = re.match(r"^(#{1,6})\s+(.+)", line.rstrip())
         if m:
-            headers.append({"line": i, "level": len(m.group(1)), "text": m.group(2).strip()})
+            headers.append(
+                {
+                    "line": i,
+                    "level": len(m.group(1)),
+                    "text": m.group(2).strip(),
+                    "source": "markdown",
+                }
+            )
+    return headers
+
+
+def _extract_plaintext_headers(lines: list[str]) -> list[dict]:
+    headers = []
+    for i, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not _looks_like_plain_heading(stripped):
+            continue
+        headers.append(
+            {
+                "line": i,
+                "level": _infer_heading_level(stripped),
+                "text": stripped,
+                "source": "plaintext",
+            }
+        )
+    return headers
+
+
+def _extract_asset_headers(lines: list[str], md_path: Path) -> list[dict]:
+    headers = []
+    normalized_lines = {i: _normalize_heading_text(line) for i, line in enumerate(lines, start=1)}
+
+    for asset_path in _iter_structure_assets(md_path.parent):
+        try:
+            payload = json.loads(asset_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            _log.debug("failed to read structure asset %s: %s", asset_path.name, e)
+            continue
+
+        for candidate in _iter_structure_heading_candidates(payload):
+            text = _clean_heading_text(candidate.get("text", ""))
+            if not _looks_like_asset_heading(text, candidate.get("level")):
+                continue
+            line_no = _locate_heading_line(text, normalized_lines)
+            if line_no is None:
+                continue
+            headers.append(
+                {
+                    "line": line_no,
+                    "level": candidate.get("level") or _infer_heading_level(text),
+                    "text": lines[line_no - 1].lstrip("#").strip() or text,
+                    "source": asset_path.name,
+                }
+            )
+
     return headers
 
 
@@ -680,35 +1027,19 @@ def _extract_headers(lines: list[str]) -> list[dict]:
 
 # Numbered section pattern: "1", "1.2", "1.2.3", with optional trailing dot
 # Also matches "1.", "2.1.", "1.2.3." (common in some journals/books)
-# Allows number followed by space, CJK char, or dot-then-space
-_RE_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)\.?(?:\s|(?=[\u4e00-\u9fff]))")
+# Allows number followed by space, ASCII letters, or CJK chars.
+_RE_NUMBERED = re.compile(r"^(\d+(?:[.．]\d+)*)[.．]?(?:\s+|(?=[A-Za-z\u4e00-\u9fff]))")
+_RE_NUMBERED_PREFIX = re.compile(r"^(\d+(?:[.．]\d+)*)[.．]?\s*")
 # "Chapter 1 Title" or Chinese "第一章" / "第1章" pattern
 _RE_CHAPTER = re.compile(r"^Chapter\s+(\d+)\b", re.IGNORECASE)
 _RE_CHAPTER_ZH = re.compile(r"^第\s*([一二三四五六七八九十百\d]+)\s*章")
+_RE_ROMAN_PREFIX = re.compile(r"^([IVXLCDM]+)[\s.)]+", re.IGNORECASE)
+_RE_LETTER_PREFIX = re.compile(r"^([A-Z])[\s.)]+")
 # TOC-area entries have trailing page numbers like "Title 123" or "Title . 123"
 # Require >= 2 digits to avoid matching "Chapter 1", "Part 2", etc.
 _RE_TRAILING_PAGE = re.compile(r"[.\s]\s*\d{2,4}\s*$")
 # Well-known structural sections (unnumbered)
-_KNOWN_SECTIONS = {
-    "abstract",
-    "introduction",
-    "preface",
-    "foreword",
-    "conclusion",
-    "conclusions",
-    "concluding remarks",
-    "summary",
-    "references",
-    "bibliography",
-    "index",
-    "acknowledgments",
-    "acknowledgements",
-    "funding",
-    "appendix",
-    "glossary",
-    "nomenclature",
-    "notation",
-}
+_KNOWN_SECTIONS = _KNOWN_SECTION_TITLES | {"preface", "foreword", "index", "glossary", "nomenclature", "notation"}
 
 
 def _toc_from_rules(raw_headers: list[dict], title: str) -> list[dict] | None:
@@ -847,21 +1178,7 @@ def _toc_from_rules(raw_headers: list[dict], title: str) -> list[dict] | None:
             # strip trailing page-number-like remnants (shouldn't exist in body, but be safe)
             clean_text = _RE_TRAILING_PAGE.sub("", text).strip().rstrip(".")
             toc.append({"line": h["line"], "level": level, "title": clean_text})
-        elif (
-            text_lower.split(",")[0].strip() in _KNOWN_SECTIONS
-            or any(text_lower.startswith(s) for s in ("appendix",))
-            or text
-            in (
-                "摘要",
-                "前言",
-                "绪论",
-                "结论",
-                "总结",
-                "参考文献",
-                "致谢",
-                "附录",
-            )
-        ):
+        elif _is_known_section_title(text):
             toc.append({"line": h["line"], "level": 1, "title": text})
         # else: skip (unnumbered, unknown → likely noise)
 
@@ -880,31 +1197,251 @@ def _similar_title(a: str, b: str) -> bool:
     return overlap > 0.8
 
 
+def _clean_heading_text(text: str) -> str:
+    text = text.strip().lstrip("#").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" :：")
+
+
+def _normalize_heading_text(text: str) -> str:
+    cleaned = _clean_heading_text(text).casefold().replace("．", ".")
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff]+", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _is_conclusion_title(text: str) -> bool:
+    if not text:
+        return False
+    cleaned = _clean_heading_text(text)
+    return bool(_CONCLUSION_KEYWORDS.search(cleaned))
+
+
+def _is_known_section_title(text: str) -> bool:
+    if not text:
+        return False
+    cleaned = _clean_heading_text(_strip_section_prefix(text))
+    lowered = cleaned.lower().split(",", 1)[0].strip().rstrip(":：")
+    zh_compact = re.sub(r"\s+", "", cleaned)
+    if lowered in _KNOWN_SECTIONS or any(lowered.startswith(s) for s in ("appendix", "supplementary")):
+        return True
+    return any(zh_compact.startswith(term) for term in _KNOWN_SECTION_TITLES_ZH)
+
+
+def _strip_section_prefix(text: str) -> str:
+    stripped = text.strip()
+    for pattern in (_RE_CHAPTER, _RE_CHAPTER_ZH, _RE_NUMBERED_PREFIX, _RE_ROMAN_PREFIX, _RE_LETTER_PREFIX):
+        m = pattern.match(stripped)
+        if m:
+            return stripped[m.end() :].strip()
+    return stripped
+
+
+def _looks_like_plain_heading(text: str) -> bool:
+    cleaned = _clean_heading_text(text)
+    lowered = cleaned.lower()
+
+    if not cleaned or len(cleaned) > _MAX_PLAIN_HEADING_LEN:
+        return False
+    if len(cleaned.split()) > _MAX_HEADING_WORDS:
+        return False
+    if "http://" in lowered or "https://" in lowered or "@" in cleaned:
+        return False
+    if re.search(r"\b(doi|copyright|received|accepted|published|correspondence|affiliation|license)\b", lowered):
+        return False
+
+    punctuation_count = sum(ch in ",;:!?。" for ch in cleaned)
+    if punctuation_count > 3:
+        return False
+
+    if (
+        _RE_NUMBERED.match(cleaned)
+        or _RE_CHAPTER.match(cleaned)
+        or _RE_CHAPTER_ZH.match(cleaned)
+        or _RE_ROMAN_PREFIX.match(cleaned)
+        or _RE_LETTER_PREFIX.match(cleaned)
+    ):
+        tail = _strip_section_prefix(cleaned)
+        if not tail:
+            return False
+        if len(tail.split()) > _MAX_HEADING_WORDS:
+            return False
+        if len(cleaned) > 90 and sum(ch in ".!?;" for ch in tail) > 1:
+            return False
+        return True
+
+    if _is_known_section_title(cleaned):
+        return True
+
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9\s/&()\-]{2,80}", cleaned)) and len(cleaned.split()) <= 12
+
+
+def _looks_like_asset_heading(text: str, level: int | None) -> bool:
+    cleaned = _clean_heading_text(text)
+    lowered = cleaned.lower()
+    if not cleaned or len(cleaned) > _MAX_PLAIN_HEADING_LEN:
+        return False
+    if len(cleaned.split()) > _MAX_HEADING_WORDS:
+        return False
+    if "http://" in lowered or "https://" in lowered or "@" in cleaned:
+        return False
+    if _looks_like_plain_heading(cleaned):
+        return True
+    return level is not None and sum(ch in ".!?;" for ch in cleaned) <= 1
+
+
+def _infer_heading_level(text: str) -> int:
+    stripped = text.strip()
+    m_num = _RE_NUMBERED_PREFIX.match(stripped)
+    if m_num and _strip_section_prefix(stripped):
+        num_str = m_num.group(1).replace("．", ".")
+        return min(num_str.count(".") + 1, 3)
+    return 1
+
+
+def _iter_structure_assets(paper_d: Path) -> list[Path]:
+    assets: list[Path] = []
+    for pattern in ("*_content_list.json", "content_list.json", "*_layout.json", "layout.json"):
+        assets.extend(sorted(paper_d.glob(pattern)))
+    return assets
+
+
+def _iter_structure_heading_candidates(node: Any):
+    if isinstance(node, dict):
+        if _node_has_heading_hint(node):
+            text = _first_str(node, ("text", "title", "content", "value", "raw_text"))
+            if text:
+                yield {"text": text, "level": _extract_node_level(node)}
+        for value in node.values():
+            yield from _iter_structure_heading_candidates(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_structure_heading_candidates(item)
+
+
+def _node_has_heading_hint(node: dict[str, Any]) -> bool:
+    for key in ("type", "kind", "category", "block_type", "tag", "role", "label"):
+        value = node.get(key)
+        if isinstance(value, str):
+            lowered = value.lower()
+            if any(token in lowered for token in _HEADING_TYPE_HINTS):
+                return True
+
+    for key in ("text_level", "level", "section_level", "title_level"):
+        value = node.get(key)
+        if isinstance(value, (int, float)) and 0 < int(value) <= 6:
+            return True
+        if isinstance(value, str) and re.fullmatch(r"h?[1-6]", value.lower()):
+            return True
+
+    return False
+
+
+def _extract_node_level(node: dict[str, Any]) -> int | None:
+    for key in ("text_level", "level", "section_level", "title_level"):
+        value = node.get(key)
+        if isinstance(value, (int, float)):
+            return max(1, min(int(value), 3))
+        if isinstance(value, str):
+            m = re.fullmatch(r"h?([1-6])", value.lower())
+            if m:
+                return max(1, min(int(m.group(1)), 3))
+    return None
+
+
+def _first_str(node: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _locate_heading_line(candidate_text: str, normalized_lines: dict[int, str]) -> int | None:
+    candidate_norm = _normalize_heading_text(candidate_text)
+    if not candidate_norm:
+        return None
+
+    for line_no, line_norm in normalized_lines.items():
+        if line_norm == candidate_norm:
+            return line_no
+
+    for line_no, line_norm in normalized_lines.items():
+        if candidate_norm in line_norm or line_norm in candidate_norm:
+            if len(line_norm) >= max(8, len(candidate_norm) // 2):
+                return line_no
+
+    return None
+
+
+def _iter_fallback_windows(lines: list[str]):
+    n = len(lines)
+    if n == 0:
+        return
+
+    if n <= _FALLBACK_WINDOW_LINES:
+        yield 1, n, _render_line_window(lines, 1, n)
+        return
+
+    floor = max(1, int(n * _FALLBACK_SCAN_FRACTION))
+    end = n
+    emitted = 0
+    while emitted < _FALLBACK_MAX_WINDOWS:
+        start = max(floor, end - _FALLBACK_WINDOW_LINES + 1)
+        yield start, end, _render_line_window(lines, start, end)
+        emitted += 1
+        if start <= floor:
+            break
+        end = max(start + _FALLBACK_WINDOW_OVERLAP - 1, start)
+
+
+def _render_line_window(lines: list[str], start: int, end: int) -> str:
+    return "\n".join(f"{line_no}: {lines[line_no - 1]}" for line_no in range(start, end + 1))
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        return int(value) if value > 0 else None
+    if isinstance(value, str):
+        m = re.search(r"\d+", value)
+        if m:
+            parsed = int(m.group())
+            return parsed if parsed > 0 else None
+    return None
+
+
 def _primary_path(
     lines: list[str],
     headers: list[dict],
     config: Config,
     max_retries: int,
     inspect: bool,
-) -> tuple[str | None, str | None]:
+) -> L3AttemptResult:
     header_list = "\n".join(f"Line {h['line']}: {'#' * h['level']} {h['text']}" for h in headers)
     prompt = (
         "Below are all section headers (with line numbers) from an academic paper markdown file.\n"
         "Identify the header that marks the START of the conclusion section "
-        "(may be named 'Conclusion', 'Conclusions', 'Concluding Remarks', 'Summary', etc.).\n\n"
+        "(may be named 'Conclusion', 'Conclusions', 'Concluding Remarks', 'Summary', "
+        "'Discussion and Conclusion', 'Conclusion and Outlook', etc.).\n\n"
         f"{header_list}\n\n"
         'Return JSON only: {"line": <line_number>, "header": "<header_text>"}\n'
         'If no conclusion section exists, return: {"line": null, "header": null}'
     )
 
+    last = _fail("primary", "no_conclusion", "LLM 未识别到结论节标题", method="primary")
     # 1 initial attempt + max_retries retries; range(1, ...) so attempt number is 1-based
     for attempt in range(1, max_retries + 2):
+        method = f"primary-attempt{attempt}"
         try:
             result = _parse_json(_call_llm(prompt, config))
-            start_line = result.get("line")
+            start_line = _as_int(result.get("line"))
             if not start_line:
                 _log.debug("[Primary #%d] LLM found no conclusion", attempt)
-                return None, None
+                last = _fail("primary", "no_conclusion", "LLM 未识别到结论节标题", method=method)
+                continue
 
             # Find end: next REAL section header after start_line
             # Skip running headers (no section number, short text)
@@ -919,15 +1456,36 @@ def _primary_path(
                 "[Primary #%d] extracted lines %d-%s, %d chars", attempt, start_line, end_line or "EOF", len(extracted)
             )
 
-            cleaned, reason = _validate_and_clean(extracted, config)
-            _log.debug("[Primary #%d] validate: %s %s", attempt, "PASS" if cleaned else "FAIL", reason)
-            if cleaned:
-                return cleaned, f"primary-attempt{attempt}"
+            validation = _validate_and_clean(extracted, config)
+            _log.debug(
+                "[Primary #%d] validate: %s %s",
+                attempt,
+                "PASS" if validation.cleaned else "FAIL",
+                validation.reason,
+            )
+            if validation.cleaned:
+                return _ok(
+                    "primary",
+                    method,
+                    validation.cleaned,
+                    reason=validation.reason,
+                    start_line=start_line,
+                    end_line=end_line,
+                )
+            last = _fail(
+                "primary",
+                validation.status,
+                validation.reason,
+                method=method,
+                start_line=start_line,
+                end_line=end_line,
+            )
 
         except Exception as e:
             _log.debug("[Primary #%d] exception: %s", attempt, e)
+            last = _fail("primary", "llm_error", f"定位结论标题失败：{e}", method=method)
 
-    return None, None
+    return last
 
 
 # ============================================================================
@@ -940,51 +1498,82 @@ def _fallback_path(
     config: Config,
     max_retries: int,
     inspect: bool,
-) -> tuple[str | None, str | None]:
-    n = len(lines)
+) -> L3AttemptResult:
+    last = _fail("fallback", "no_conclusion", "滑窗扫描未找到结论节", method="fallback")
 
-    # Send first 100 + last 200 lines (conclusion is usually near the end)
-    if n <= 300:
-        sample = "\n".join(f"{i + 1}: {l}" for i, l in enumerate(lines))
-    else:
-        head = "\n".join(f"{i + 1}: {l}" for i, l in enumerate(lines[:100]))
-        tail_start = max(100, n - 200)
-        tail = "\n".join(f"{tail_start + i + 1}: {l}" for i, l in enumerate(lines[tail_start:]))
-        sample = f"[Lines 1–100]\n{head}\n\n...[中间省略]...\n\n[Lines {tail_start + 1}–{n}]\n{tail}"
+    for window_idx, (window_start, window_end, sample) in enumerate(_iter_fallback_windows(lines), start=1):
+        method = f"fallback-window{window_idx}"
+        prompt = (
+            "Find the conclusion section in the following excerpt from an academic paper. "
+            "The excerpt is already annotated with GLOBAL 1-indexed line numbers. "
+            "If the conclusion section appears in this excerpt, return the global line number "
+            "where it STARTS and the global line number where it ENDS "
+            "(last line before References/Appendix/end of the conclusion).\n\n"
+            f"[Excerpt lines {window_start}–{window_end}]\n{sample}\n\n"
+            'Return JSON only: {"start_line": <N>, "end_line": <N>}\n'
+            'If no conclusion section exists in this excerpt, return: {"start_line": null, "end_line": null}'
+        )
 
-    prompt = (
-        "Find the conclusion section in this academic paper (markdown format). "
-        "Return the 1-indexed line number where the conclusion STARTS and where it ENDS "
-        "(last line before References/Appendix/end of file).\n\n"
-        f"{sample}\n\n"
-        'Return JSON only: {"start_line": <N>, "end_line": <N>}\n'
-        'If no conclusion exists, return: {"start_line": null, "end_line": null}'
-    )
-
-    # 1 initial attempt + max_retries retries; range(1, ...) so attempt number is 1-based
-    for attempt in range(1, max_retries + 2):
         try:
             result = _parse_json(_call_llm(prompt, config))
-            start_line = result.get("start_line")
-            end_line = result.get("end_line")
+            start_line = _as_int(result.get("start_line"))
+            end_line = _as_int(result.get("end_line"))
             if not start_line:
-                _log.debug("[Fallback #%d] LLM found no conclusion", attempt)
-                return None, None
+                _log.debug("[Fallback %s] LLM found no conclusion", method)
+                last = _fail(
+                    "fallback",
+                    "no_conclusion",
+                    f"窗口 {window_start}-{window_end} 未找到结论节",
+                    method=method,
+                )
+                continue
+            if end_line is not None and end_line < start_line:
+                end_line = start_line
 
             extracted = _slice_lines(lines, start_line, end_line)
             _log.debug(
-                "[Fallback #%d] extracted lines %d-%s, %d chars", attempt, start_line, end_line or "EOF", len(extracted)
+                "[Fallback %s] extracted lines %d-%s, %d chars",
+                method,
+                start_line,
+                end_line or "EOF",
+                len(extracted),
             )
 
-            cleaned, reason = _validate_and_clean(extracted, config)
-            _log.debug("[Fallback #%d] validate: %s %s", attempt, "PASS" if cleaned else "FAIL", reason)
-            if cleaned:
-                return cleaned, f"fallback-attempt{attempt}"
+            validation = _validate_and_clean(extracted, config)
+            _log.debug(
+                "[Fallback %s] validate: %s %s",
+                method,
+                "PASS" if validation.cleaned else "FAIL",
+                validation.reason,
+            )
+            if validation.cleaned:
+                return _ok(
+                    "fallback",
+                    method,
+                    validation.cleaned,
+                    reason=validation.reason,
+                    start_line=start_line,
+                    end_line=end_line,
+                )
 
+            last = _fail(
+                "fallback",
+                validation.status,
+                validation.reason,
+                method=method,
+                start_line=start_line,
+                end_line=end_line,
+            )
         except Exception as e:
-            _log.debug("[Fallback #%d] exception: %s", attempt, e)
+            _log.debug("[Fallback %s] exception: %s", method, e)
+            last = _fail(
+                "fallback",
+                "llm_error",
+                f"滑窗 {window_start}-{window_end} 定位失败：{e}",
+                method=method,
+            )
 
-    return None, None
+    return last
 
 
 # ============================================================================
@@ -992,15 +1581,15 @@ def _fallback_path(
 # ============================================================================
 
 
-def _validate_and_clean(text: str, config: Config) -> tuple[str | None, str]:
+def _validate_and_clean(text: str, config: Config) -> L3ValidationResult:
     """校验并清理提取的结论文本。
 
-    返回 (cleaned_text, reason)：
-    - cleaned_text 为 None 表示文本不包含有效结论内容
-    - cleaned_text 为清理后的纯结论文本（去除标题行、Acknowledgments 等）
+    Returns:
+        Structured validation result. ``cleaned`` is present only when the
+        excerpt contains valid conclusion content.
     """
     if len(text.strip()) < 100:
-        return None, "文本过短"
+        return L3ValidationResult(status="too_short", reason="文本过短")
 
     prompt = (
         "The following text was extracted as the conclusion section of an academic paper. "
@@ -1021,11 +1610,20 @@ def _validate_and_clean(text: str, config: Config) -> tuple[str | None, str]:
         result = _parse_json(_call_llm(prompt, config, timeout=config.llm.timeout_clean))
         cleaned = result.get("conclusion")
         reason = result.get("reason") or ""
-        if not cleaned or len(cleaned.strip()) < 50:
-            return None, reason or "无有效结论内容"
-        return cleaned.strip(), reason
+        if not isinstance(cleaned, str) or len(cleaned.strip()) < 50:
+            return L3ValidationResult(status="validation_reject", reason=reason or "无有效结论内容")
+        return L3ValidationResult(status="ok", reason=reason or "校验通过", cleaned=cleaned.strip())
     except Exception as e:
-        return None, f"校验异常：{e}"
+        return L3ValidationResult(status="llm_error", reason=f"校验异常：{e}")
+
+
+def _validate_with_retries(text: str, config: Config, *, attempts: int) -> L3ValidationResult:
+    result = _validate_and_clean(text, config)
+    for _ in range(1, max(1, attempts)):
+        if result.status != "llm_error":
+            break
+        result = _validate_and_clean(text, config)
+    return result
 
 
 # ============================================================================

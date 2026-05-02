@@ -9,12 +9,14 @@
 llm:
   api_key: ""
 
-# MinerU API key — for PDF → Markdown conversion
-# MinerU API 密钥——用于 PDF 转 Markdown
+# MinerU API keys — for PDF → Markdown cloud conversion
+# MinerU API 密钥——用于云端 PDF 转 Markdown
 # Free tier 免费申请: https://mineru.net/apiManage/token
 # Or self-host 或本地部署: https://github.com/opendatalab/MinerU
 ingest:
-  mineru_api_key: ""
+  mineru_api_keys: []
+  # Legacy single-key form is still supported:
+  # mineru_api_key: ""
   contact_email: "" # Crossref polite pool — your email 你的邮箱（加速 Crossref 查询）
   s2_api_key: "" # Semantic Scholar API key — higher rate limits S2 API 密钥（提升限速）
                # Apply at: https://www.semanticscholar.org/product/api#api-key

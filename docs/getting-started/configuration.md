@@ -23,7 +23,9 @@ llm:
   api_key: "sk-your-key-here"
 
 ingest:
-  mineru_api_key: "your-mineru-key"
+  mineru_api_keys:
+    - "your-mineru-key"
+    - "your-second-mineru-key"
 ```
 
 ## Key Settings

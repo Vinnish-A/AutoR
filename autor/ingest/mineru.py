@@ -78,13 +78,17 @@ MinerU 后端选项 (--backend)
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from queue import Empty, Queue
 
 import requests
 
@@ -137,6 +141,70 @@ class ConvertResult:
     elapsed_seconds: float = 0.0
     error: str | None = None
     md_size: int = 0  # bytes
+
+
+@dataclass
+class MinerUCloudJob:
+    """Single PDF conversion job assigned to one cloud token worker."""
+
+    index: int
+    pdf_path: Path
+
+
+class SlidingWindowRateLimiter:
+    """Small thread-safe sliding-window limiter for per-token cloud limits."""
+
+    def __init__(self, max_events: int, window_seconds: int = 60) -> None:
+        self.max_events = max(1, max_events)
+        self.window_seconds = window_seconds
+        self._events: list[float] = []
+        self._lock = threading.Lock()
+
+    def available_capacity(self) -> int:
+        with self._lock:
+            self._prune_locked()
+            return max(0, self.max_events - len(self._events))
+
+    def record(self, count: int = 1) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._prune_locked(now)
+            self._events.extend([now] * max(0, count))
+
+    def wait_for_capacity(self, count: int = 1) -> None:
+        count = max(1, count)
+        while self.available_capacity() < count:
+            time.sleep(0.25)
+        self.record(count)
+
+    def _prune_locked(self, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        cutoff = now - self.window_seconds
+        self._events = [ts for ts in self._events if ts > cutoff]
+
+
+@dataclass
+class MinerUCloudTokenWorkerState:
+    """Independent queue and throttle state for one MinerU cloud token."""
+
+    token_id: str
+    token: str
+    queue: Queue[MinerUCloudJob]
+    files_limiter: SlidingWindowRateLimiter
+    queries_limiter: SlidingWindowRateLimiter
+    cooldown_until: datetime | None = None
+    inflight_batches: int = 0
+    daily_file_count: int = 0
+    consecutive_429: int = 0
+    disabled_until: datetime | None = None
+
+    def in_cooldown(self) -> bool:
+        now = datetime.now(timezone.utc)
+        return bool(self.cooldown_until and self.cooldown_until > now)
+
+
+class MinerUCloudRateLimitError(RuntimeError):
+    """Raised when one MinerU cloud token receives HTTP 429."""
 
 
 @dataclass
@@ -559,22 +627,33 @@ def convert_pdfs_cloud_batch(
     pdf_paths: list[Path],
     opts: ConvertOptions,
     *,
-    api_key: str,
+    api_key: str | None = None,
+    api_keys: list[str] | None = None,
     cloud_url: str = CLOUD_API_URL,
     batch_size: int = _DEFAULT_CLOUD_BATCH_SIZE,
+    max_files_per_token_per_min: int = 35,
+    max_result_queries_per_token_per_min: int = 600,
+    poll_interval_seconds: int = CLOUD_POLL_INTERVAL,
+    backoff_on_429_seconds: int = 60,
+    backoff_max_seconds: int = 600,
 ) -> list[ConvertResult]:
     """通过 MinerU 云 API 批量转换 PDF 为 Markdown。
 
-    所有 PDF 在一个 batch 内提交，并行上传，统一轮询。
-    超过 ``batch_size`` 时自动分批。
+    每个 cloud token 拥有独立队列、限速器、cooldown 与 retry 状态。
+    多 token 时会启动同等数量的 token worker 并行提交 batch。
 
     Args:
         pdf_paths: PDF 文件路径列表。
         opts: 转换选项。
-        api_key: MinerU 云 API 密钥。
+        api_key: 旧版单 MinerU 云 API 密钥。
+        api_keys: MinerU 云 API 密钥列表。提供时优先于 ``api_key``。
         cloud_url: MinerU 云 API 基础 URL。
-        batch_size: 每批提交文件数上限，默认 20。可通过
-            ``config.yaml`` 的 ``ingest.mineru_batch_size`` 配置。
+        batch_size: 每个 token 每批提交文件数上限，默认 20。
+        max_files_per_token_per_min: 每个 token 每分钟提交文件上限。
+        max_result_queries_per_token_per_min: 每个 token 每分钟结果查询上限。
+        poll_interval_seconds: 云端结果查询间隔。
+        backoff_on_429_seconds: 单 token 遇到 429 的初始退避秒数。
+        backoff_max_seconds: 单 token 遇到 429 的最大退避秒数。
 
     Returns:
         与 ``pdf_paths`` 等长的 :class:`ConvertResult` 列表。
@@ -582,13 +661,137 @@ def convert_pdfs_cloud_batch(
     if not pdf_paths:
         return []
 
-    # Split into chunks
-    all_results: list[ConvertResult] = []
-    for chunk_start in range(0, len(pdf_paths), batch_size):
-        chunk = pdf_paths[chunk_start : chunk_start + batch_size]
-        chunk_results = _convert_chunk_cloud(chunk, opts, api_key=api_key, cloud_url=cloud_url)
-        all_results.extend(chunk_results)
-    return all_results
+    resolved_keys = [key.strip() for key in (api_keys or ([api_key] if api_key else [])) if key and key.strip()]
+    if not resolved_keys:
+        return [
+            ConvertResult(pdf_path=pdf_path, md_path=(opts.output_dir or pdf_path.parent) / f"{pdf_path.stem}.md", error="未配置 MinerU 云 API key")
+            for pdf_path in pdf_paths
+        ]
+
+    token_workers = [
+        MinerUCloudTokenWorkerState(
+            token_id=f"mineru_token_{idx + 1}",
+            token=token,
+            queue=Queue(),
+            files_limiter=SlidingWindowRateLimiter(max_files_per_token_per_min),
+            queries_limiter=SlidingWindowRateLimiter(max_result_queries_per_token_per_min),
+        )
+        for idx, token in enumerate(resolved_keys)
+    ]
+    results: list[ConvertResult | None] = [None] * len(pdf_paths)
+    lock = threading.Lock()
+    completed = 0
+
+    def active_workers(exclude: MinerUCloudTokenWorkerState | None = None) -> list[MinerUCloudTokenWorkerState]:
+        return [w for w in token_workers if w is not exclude and not w.in_cooldown()]
+
+    def dispatch_cloud_job(job: MinerUCloudJob, exclude: MinerUCloudTokenWorkerState | None = None) -> None:
+        candidates = active_workers(exclude=exclude) or [w for w in token_workers if w is not exclude] or [exclude]
+        target = min((w for w in candidates if w is not None), key=lambda w: w.queue.qsize())
+        target.queue.put(job)
+
+    def mark_result(index: int, result: ConvertResult) -> None:
+        nonlocal completed
+        with lock:
+            if results[index] is None:
+                results[index] = result
+                completed += 1
+
+    for index, pdf_path in enumerate(pdf_paths):
+        dispatch_cloud_job(MinerUCloudJob(index=index, pdf_path=pdf_path))
+
+    _log.info(
+        "Starting MinerU cloud batch: %d PDFs, %d token workers, batch_size=%d",
+        len(pdf_paths),
+        len(token_workers),
+        batch_size,
+    )
+
+    def worker_loop(state: MinerUCloudTokenWorkerState) -> None:
+        nonlocal completed
+        while True:
+            with lock:
+                if completed >= len(pdf_paths):
+                    return
+
+            if state.in_cooldown():
+                sleep_for = max(0.25, (state.cooldown_until - datetime.now(timezone.utc)).total_seconds())
+                time.sleep(min(sleep_for, 2.0))
+                continue
+
+            capacity = min(batch_size, state.files_limiter.available_capacity())
+            if capacity <= 0:
+                time.sleep(0.5)
+                continue
+
+            batch: list[MinerUCloudJob] = []
+            try:
+                batch.append(state.queue.get(timeout=1.0))
+            except Empty:
+                continue
+            while len(batch) < capacity:
+                try:
+                    batch.append(state.queue.get_nowait())
+                except Empty:
+                    break
+
+            state.files_limiter.record(len(batch))
+            state.inflight_batches += 1
+            try:
+                chunk_results = _convert_chunk_cloud(
+                    [job.pdf_path for job in batch],
+                    opts,
+                    api_key=state.token,
+                    cloud_url=cloud_url,
+                    token_id=state.token_id,
+                    query_limiter=state.queries_limiter,
+                    poll_interval_seconds=poll_interval_seconds,
+                )
+                state.consecutive_429 = 0
+                state.daily_file_count += len(batch)
+                for job, result in zip(batch, chunk_results):
+                    mark_result(job.index, result)
+            except MinerUCloudRateLimitError:
+                state.consecutive_429 += 1
+                backoff = min(backoff_max_seconds, backoff_on_429_seconds * (2 ** (state.consecutive_429 - 1)))
+                state.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=backoff)
+                _log.warning("%s received HTTP 429; cooldown %ss", state.token_id, backoff)
+                for job in batch:
+                    dispatch_cloud_job(job, exclude=state)
+            except Exception as exc:
+                _log.exception("%s failed while processing a MinerU cloud batch", state.token_id)
+                elapsed = 0.0
+                for job in batch:
+                    mark_result(
+                        job.index,
+                        ConvertResult(
+                            pdf_path=job.pdf_path,
+                            md_path=(opts.output_dir or job.pdf_path.parent) / f"{job.pdf_path.stem}.md",
+                            elapsed_seconds=elapsed,
+                            error=f"MinerU 云端 batch worker 异常: {exc}",
+                        ),
+                    )
+            finally:
+                state.inflight_batches = max(0, state.inflight_batches - 1)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(token_workers), thread_name_prefix="mineru-cloud") as pool:
+        futures = [pool.submit(worker_loop, state) for state in token_workers]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+    final_results: list[ConvertResult] = []
+    for idx, result in enumerate(results):
+        if result is None:
+            final_results.append(
+                ConvertResult(
+                    pdf_path=pdf_paths[idx],
+                    md_path=(opts.output_dir or pdf_paths[idx].parent) / f"{pdf_paths[idx].stem}.md",
+                    error="MinerU 云端任务未完成",
+                )
+            )
+        else:
+            final_results.append(result)
+    return final_results
 
 
 def _convert_chunk_cloud(
@@ -597,10 +800,11 @@ def _convert_chunk_cloud(
     *,
     api_key: str,
     cloud_url: str,
+    token_id: str = "mineru_token_1",
+    query_limiter: SlidingWindowRateLimiter | None = None,
+    poll_interval_seconds: int = CLOUD_POLL_INTERVAL,
 ) -> list[ConvertResult]:
     """Process a single batch chunk of PDFs via cloud API."""
-    import concurrent.futures
-
     t0 = time.time()
     out_dir = opts.output_dir if opts.output_dir else pdf_paths[0].parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -656,6 +860,9 @@ def _convert_chunk_cloud(
             results[did].elapsed_seconds = time.time() - t0
         return list(results.values())
 
+    if resp.status_code == 429:
+        raise MinerUCloudRateLimitError(f"{token_id} received HTTP 429")
+
     if resp.status_code != 200:
         for did in data_id_to_path:
             results[did].error = f"云 API HTTP {resp.status_code}: {resp.text[:200]}"
@@ -702,7 +909,7 @@ def _convert_chunk_cloud(
             return str(e)
         return None
 
-    _log.info("Uploading %d PDFs to MinerU cloud (batch %s)...", len(files_payload), batch_id[:12])
+    _log.info("Uploading %d PDFs to MinerU cloud with %s (batch %s)...", len(files_payload), token_id, batch_id[:12])
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         upload_errors = list(pool.map(_upload_one, range(len(files_payload))))
 
@@ -724,7 +931,9 @@ def _convert_chunk_cloud(
     done_ids: set[str] = set()
 
     while time.time() < deadline and done_ids != pending_ids:
-        time.sleep(CLOUD_POLL_INTERVAL)
+        time.sleep(poll_interval_seconds)
+        if query_limiter is not None:
+            query_limiter.wait_for_capacity()
         try:
             poll_resp = requests.get(
                 f"{cloud_url}/extract-results/batch/{batch_id}",
@@ -734,6 +943,8 @@ def _convert_chunk_cloud(
         except requests.RequestException:
             continue
 
+        if poll_resp.status_code == 429:
+            raise MinerUCloudRateLimitError(f"{token_id} received HTTP 429")
         if poll_resp.status_code != 200:
             continue
         try:

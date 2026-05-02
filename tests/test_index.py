@@ -112,11 +112,45 @@ class TestLookupPaper:
         assert result is not None
         assert result["doi"] == "10.1234/jfm.2023.001"
 
+    def test_lookup_by_doi_prefix(self, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        result = lookup_paper(tmp_db, "DOI:10.1234/JFM.2023.001")
+        assert result is not None
+        assert result["id"] == "aaaa-1111"
+
     def test_lookup_by_pmid(self, tmp_papers, tmp_db):
         build_index(tmp_papers, tmp_db)
         result = lookup_paper(tmp_db, "12345678")
         assert result is not None
         assert result["pmid"] == "12345678"
+
+    def test_lookup_pmid_prefixed_input_matches_pmid_dir_prefix(self, tmp_path, tmp_db):
+        papers_dir = tmp_path / "papers"
+        paper_dir = papers_dir / "PMID-32467386-Cell"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "id": "pmid-dir-001",
+                    "title": "A paper with weak metadata",
+                    "authors": ["Author"],
+                    "year": 2020,
+                    "journal": "Cell",
+                    "doi": "",
+                    "pmid": "",
+                    "abstract": "Abstract.",
+                    "paper_type": "journal-article",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (paper_dir / "paper.md").write_text("# A paper with weak metadata\n\nContent.", encoding="utf-8")
+        build_index(papers_dir, tmp_db)
+
+        result = lookup_paper(tmp_db, "PMID:32467386")
+
+        assert result is not None
+        assert result["dir_name"] == "PMID-32467386-Cell"
 
     def test_lookup_by_doi_is_backward_compatible_with_legacy_uppercase_registry(self, tmp_papers, tmp_db):
         build_index(tmp_papers, tmp_db)

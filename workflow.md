@@ -89,7 +89,7 @@ By default, autor will try to connect to:
 http://localhost:8000
 ```
 
-If local MinerU is not running, but `MINERU_API_KEY` is configured in `config.local.yaml` or the environment, autor automatically falls back to cloud conversion.
+If local MinerU is not running, but `ingest.mineru_api_keys` is configured in `config.local.yaml` or `MINERU_API_KEYS` is set in the environment, autor automatically falls back to cloud conversion.
 
 ### 1.4 When You Do Not Need to Start a "Server"
 

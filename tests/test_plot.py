@@ -1,4 +1,4 @@
-"""Tests for Nano Banana plot generation helpers and CLI glue."""
+"""Tests for GPT Image 2 plot generation helpers and CLI glue."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def mock_plot_server():
                     "authorization": self.headers.get("Authorization"),
                 }
             )
-            if self.path == "/v1/draw/nano-banana":
+            if self.path == "/v1/draw/completions":
                 self._send_json({"code": 0, "msg": "success", "data": {"id": "job-123"}})
                 return
             if self.path == "/v1/draw/result":
@@ -113,11 +113,11 @@ class TestGeneratePlot:
         assert image_path.parent == tmp_path / "workspace" / "car-glioma" / "figure"
 
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert meta["request"]["model"] == "nano-banana-pro"
-        assert meta["request"]["imageSize"] == "1K"
+        assert meta["request"]["model"] == "gpt-image-2"
         assert meta["request"]["aspectRatio"] == "auto"
         assert requests_seen[0]["authorization"] == "Bearer plot-key"
         assert requests_seen[0]["json"]["webHook"] == "-1"
+        assert "imageSize" not in requests_seen[0]["json"]
 
     def test_generate_plot_requires_api_key(self, tmp_path):
         cfg = _build_config({}, tmp_path)
@@ -155,7 +155,6 @@ class TestCmdPlot:
             host=None,
             api_key=None,
             model=None,
-            image_size=None,
             aspect_ratio=None,
             timeout=None,
             poll_interval=None,

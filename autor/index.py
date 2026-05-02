@@ -129,7 +129,10 @@ _best_citation = best_citation  # backward compat alias
 
 def _normalize_doi(value: str | None) -> str:
     """Normalize DOI strings for exact registry matching."""
-    return (value or "").strip().lower()
+    text = str(value or "").strip()
+    text = re.sub(r"^doi:\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", text, flags=re.IGNORECASE).strip()
+    return text.lower()
 
 
 def _normalize_pmid(value: str | None) -> str:
@@ -142,6 +145,36 @@ def _normalize_pmid(value: str | None) -> str:
         return url_match.group(1)
     text = re.sub(r"^pmid:\s*", "", text, flags=re.IGNORECASE).strip()
     return text if text.isdigit() else ""
+
+
+def _escape_like(value: str) -> str:
+    """Escape a string for SQLite LIKE prefix matching."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _lookup_registry_dir_prefix(conn: sqlite3.Connection, prefixes: list[str]) -> sqlite3.Row | None:
+    """Find a registry row by dir_name prefix, preferring non-DUP entries."""
+    seen: set[str] = set()
+    for prefix in prefixes:
+        prefix = prefix.strip()
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        row = conn.execute(
+            """
+            SELECT * FROM papers_registry
+            WHERE dir_name LIKE ? ESCAPE '\\'
+            ORDER BY
+                CASE WHEN dir_name LIKE 'DUP-%' THEN 1 ELSE 0 END,
+                LENGTH(dir_name),
+                dir_name
+            LIMIT 1
+            """,
+            (_escape_like(prefix) + "%",),
+        ).fetchone()
+        if row:
+            return row
+    return None
 
 
 def _normalize_exact_title(value: str | None) -> str:
@@ -766,6 +799,9 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
     """
     if not db_path.exists():
         return None
+    raw_input = str(user_input or "").strip()
+    if not raw_input:
+        return None
     conn = sqlite3.connect(db_path)
     try:
         has_table = conn.execute(
@@ -776,15 +812,15 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
         conn.row_factory = sqlite3.Row
         _ensure_registry_runtime_compat(conn)
         # Try UUID
-        row = conn.execute("SELECT * FROM papers_registry WHERE id = ?", (user_input,)).fetchone()
+        row = conn.execute("SELECT * FROM papers_registry WHERE id = ?", (raw_input,)).fetchone()
         if row:
             return dict(row)
         # Try dir_name
-        row = conn.execute("SELECT * FROM papers_registry WHERE dir_name = ?", (user_input,)).fetchone()
+        row = conn.execute("SELECT * FROM papers_registry WHERE dir_name = ?", (raw_input,)).fetchone()
         if row:
             return dict(row)
         # Try DOI (new DBs store lowercase DOI; old DBs may still contain mixed case)
-        normalized_doi = _normalize_doi(user_input)
+        normalized_doi = _normalize_doi(raw_input)
         row = conn.execute(
             "SELECT * FROM papers_registry WHERE doi = ?",
             (normalized_doi,),
@@ -801,13 +837,13 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
         try:
             row = conn.execute(
                 "SELECT * FROM papers_registry WHERE publication_number = ?",
-                (user_input.upper().strip(),),
+                (raw_input.upper().strip(),),
             ).fetchone()
             if row:
                 return dict(row)
         except sqlite3.OperationalError:
             pass  # column may not exist in old DB
-        normalized_pmid = _normalize_pmid(user_input)
+        normalized_pmid = _normalize_pmid(raw_input)
         if normalized_pmid:
             try:
                 row = conn.execute(
@@ -818,6 +854,20 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
                     return dict(row)
             except sqlite3.OperationalError:
                 pass
+            row = _lookup_registry_dir_prefix(
+                conn,
+                [f"PMID-{normalized_pmid}-", f"PMID:{normalized_pmid}-", f"PMID_{normalized_pmid}_"],
+            )
+            if row:
+                return dict(row)
+        # Last-chance prefix matching for callers that pass a dir_name stem.
+        prefix_candidates = [raw_input]
+        if normalized_doi:
+            safe_doi = re.sub(r"[^A-Za-z0-9]+", "-", normalized_doi).strip("-")
+            prefix_candidates.extend([f"DOI-{safe_doi}-", f"DOI-{safe_doi}"])
+        row = _lookup_registry_dir_prefix(conn, prefix_candidates)
+        if row:
+            return dict(row)
     finally:
         conn.close()
     return None

@@ -168,7 +168,7 @@ def step_mineru(ctx: InboxCtx) -> StepResult:
     """PDF → Markdown 转换（MinerU）。
 
     md-only 入库项（无 PDF）自动跳过。已有同名 ``.md`` 时也跳过。
-    本地 MinerU 不可达时自动 fallback 到云 API（需配置 ``mineru_api_key``）。
+    本地 MinerU 不可达时自动 fallback 到云 API（需配置 ``mineru_api_keys``）。
     超长 PDF（超过 ``chunk_page_limit`` 页）自动切分后逐段转换再合并。
 
     Args:
@@ -226,15 +226,16 @@ def step_mineru(ctx: InboxCtx) -> StepResult:
     if is_long:
         ui(f"Long PDF detected ({page_count} pages > {chunk_limit} limit), splitting...")
 
-    # Try local MinerU first, fallback to cloud API
-    if check_server(ctx.cfg.ingest.mineru_endpoint):
+    # Try local MinerU first unless cloud mode is requested, fallback to cloud API.
+    mineru_mode = getattr(ctx.cfg.ingest, "mineru_mode", "hybrid")
+    if mineru_mode != "cloud" and check_server(ctx.cfg.ingest.mineru_endpoint):
         if is_long:
             result = _convert_long_pdf(pdf_path, mineru_opts, chunk_size=chunk_limit)
         else:
             result = convert_pdf(pdf_path, mineru_opts)
     else:
-        api_key = ctx.cfg.resolved_mineru_api_key()
-        if not api_key:
+        api_keys = ctx.cfg.resolved_mineru_api_keys()
+        if not api_keys:
             _log.error("MinerU unreachable and no cloud API key")
             ctx.status = "failed"
             return StepResult.FAIL
@@ -245,7 +246,7 @@ def step_mineru(ctx: InboxCtx) -> StepResult:
             result = _convert_long_pdf_cloud(
                 pdf_path,
                 mineru_opts,
-                api_key=api_key,
+                api_key=api_keys[0],
                 cloud_url=ctx.cfg.ingest.mineru_cloud_url,
                 chunk_size=chunk_limit,
             )
@@ -253,7 +254,7 @@ def step_mineru(ctx: InboxCtx) -> StepResult:
             result = convert_pdf_cloud(
                 pdf_path,
                 mineru_opts,
-                api_key=api_key,
+                api_key=api_keys[0],
                 cloud_url=ctx.cfg.ingest.mineru_cloud_url,
             )
 
@@ -902,6 +903,67 @@ PRESETS: dict[str, list[str]] = {
 # ============================================================================
 
 
+def _preconvert_inbox_pdfs_cloud(
+    *,
+    cfg: Config,
+    inbox_dir: Path,
+    entries: dict[str, dict[str, Path | None]],
+) -> None:
+    """Convert eligible inbox PDFs through per-token cloud workers before serial ingest."""
+    from autor.ingest.mineru import ConvertOptions, _get_pdf_page_count, convert_pdfs_cloud_batch
+
+    api_keys = cfg.resolved_mineru_api_keys()
+    if not api_keys:
+        return
+
+    chunk_limit = getattr(cfg.ingest, "chunk_page_limit", 100)
+    pdf_paths: list[Path] = []
+    for paths in entries.values():
+        pdf_path = paths.get("pdf")
+        if not pdf_path:
+            continue
+        md_path = inbox_dir / f"{pdf_path.stem}.md"
+        if md_path.exists():
+            continue
+        page_count = _get_pdf_page_count(pdf_path)
+        if page_count > chunk_limit:
+            continue
+        pdf_paths.append(pdf_path)
+
+    if not pdf_paths:
+        return
+
+    mineru_opts = ConvertOptions(
+        api_url=cfg.ingest.mineru_endpoint,
+        output_dir=inbox_dir,
+        backend=cfg.ingest.mineru_backend_local,
+        cloud_model_version=cfg.ingest.mineru_model_version_cloud,
+        lang=cfg.ingest.mineru_lang,
+        parse_method=cfg.ingest.mineru_parse_method,
+        formula_enable=cfg.ingest.mineru_enable_formula,
+        table_enable=cfg.ingest.mineru_enable_table,
+    )
+    ui(f"云端 MinerU 批量转换 {len(pdf_paths)} 个 PDF（{len(api_keys)} 个 token worker）...")
+    results = convert_pdfs_cloud_batch(
+        pdf_paths,
+        mineru_opts,
+        api_keys=api_keys,
+        cloud_url=cfg.ingest.mineru_cloud_url,
+        batch_size=cfg.ingest.mineru_cloud_batch_size,
+        max_files_per_token_per_min=cfg.ingest.mineru_cloud_max_files_per_token_per_min,
+        max_result_queries_per_token_per_min=cfg.ingest.mineru_cloud_max_result_queries_per_token_per_min,
+        poll_interval_seconds=cfg.ingest.mineru_cloud_poll_interval_seconds,
+        backoff_on_429_seconds=cfg.ingest.mineru_cloud_backoff_on_429_seconds,
+        backoff_max_seconds=cfg.ingest.mineru_cloud_backoff_max_seconds,
+    )
+    ok = sum(1 for result in results if result.success)
+    failed = len(results) - ok
+    ui(f"云端 MinerU 批量转换完成: {ok} 成功 / {failed} 失败")
+    for result in results:
+        if not result.success:
+            _log.warning("MinerU cloud batch failed for %s: %s", result.pdf_path.name, result.error)
+
+
 def _process_inbox(
     inbox_dir: Path,
     papers_dir: Path,
@@ -969,12 +1031,15 @@ def _process_inbox(
     md_only_count = sum(1 for e in entries.values() if not e["pdf"] and e["md"])
 
     needs_mineru = has_pdfs and "mineru" in inbox_steps
+    local_mineru_available = False
     if needs_mineru and not dry_run:
         from autor.ingest.mineru import check_server
 
-        if not check_server(cfg.ingest.mineru_endpoint):
-            if cfg.resolved_mineru_api_key():
-                _log.debug("local MinerU unreachable, will use cloud API in sequential mode")
+        mineru_mode = getattr(cfg.ingest, "mineru_mode", "hybrid")
+        local_mineru_available = mineru_mode != "cloud" and check_server(cfg.ingest.mineru_endpoint)
+        if not local_mineru_available:
+            if cfg.resolved_mineru_api_keys():
+                _log.debug("local MinerU unavailable or cloud mode requested, will use cloud API")
             else:
                 _log.error("MinerU unreachable (local: %s, no cloud API key)", cfg.ingest.mineru_endpoint)
                 sys.exit(1)
@@ -994,6 +1059,9 @@ def _process_inbox(
     stats: dict[str, int] = {"ingested": 0, "duplicate": 0, "needs_review": 0, "failed": 0, "skipped": 0}
     step_times: dict[str, float] = {}
     sorted_entries = sorted(entries.items())
+    if needs_mineru and not dry_run and not local_mineru_available:
+        _preconvert_inbox_pdfs_cloud(cfg=cfg, inbox_dir=inbox_dir, entries=entries)
+
     for idx, (stem, paths) in enumerate(sorted_entries):
         office_path = paths.get("office")
         if paths["pdf"]:
@@ -1338,6 +1406,15 @@ def run_pipeline(
 
         ws_dir = cfg._root / "workspace" / workspace
         workspace_mod.create(ws_dir)
+        if opts.get("workspace_filter"):
+            successfully_ingested, rejected = workspace_mod.filter_resolved_by_scope(
+                successfully_ingested,
+                cfg.papers_dir,
+                str(opts["workspace_filter"]),
+                cfg=cfg,
+            )
+            if rejected:
+                _log.info("工作区范围过滤排除了 %d 篇论文: %s", len(rejected), workspace)
         added = workspace_mod.add(ws_dir, [], cfg.index_db, resolved=successfully_ingested)
         if added:
             _log.info("已将 %d 篇论文添加到工作区: %s", len(added), workspace)
@@ -1481,10 +1558,10 @@ def batch_convert_pdfs(
     from autor.ingest.mineru import ConvertOptions, check_server
 
     use_local = check_server(cfg.ingest.mineru_endpoint)
-    api_key = None
+    api_keys: list[str] = []
     if not use_local:
-        api_key = cfg.resolved_mineru_api_key()
-        if not api_key:
+        api_keys = cfg.resolved_mineru_api_keys()
+        if not api_keys:
             ui("错误：MinerU 不可达且无云 API key，无法批量转换")
             return stats
 
@@ -1512,7 +1589,7 @@ def batch_convert_pdfs(
             result = convert_pdf_cloud(
                 pdf_path,
                 mineru_opts,
-                api_key=api_key,
+                api_key=api_keys[0],
                 cloud_url=cfg.ingest.mineru_cloud_url,
             )
         if not result.success:

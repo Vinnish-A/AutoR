@@ -76,13 +76,13 @@ class TestBuildConfig:
         cfg = _build_config({}, tmp_path)
         assert cfg.ingest.extractor == "robust"
         assert cfg.ingest.chunk_page_limit == 100
+        assert cfg.ingest.mineru_cloud_batch_size == 20
         assert cfg.ingest.mineru_batch_size == 20
 
     def test_plot_defaults(self, tmp_path):
         cfg = _build_config({}, tmp_path)
         assert cfg.plot.host == "https://grsai.dakka.com.cn"
-        assert cfg.plot.model == "nano-banana-pro"
-        assert cfg.plot.image_size == "1K"
+        assert cfg.plot.model == "gpt-image-2"
         assert cfg.plot.aspect_ratio == "auto"
 
     def test_null_sections_handled(self, tmp_path):
@@ -154,19 +154,16 @@ class TestBuildConfig:
         data = {
             "plot": {
                 "host": "https://yaml.example",
-                "model": "nano-banana",
-                "image_size": "2K",
+                "model": "gpt-image-2",
                 "aspect_ratio": "1:1",
             }
         }
         monkeypatch.setenv("AUTOR_PLOT_HOST", "https://env.example")
-        monkeypatch.setenv("AUTOR_PLOT_MODEL", "nano-banana-pro")
-        monkeypatch.setenv("AUTOR_PLOT_IMAGE_SIZE", "1K")
+        monkeypatch.setenv("AUTOR_PLOT_MODEL", "gpt-image-2")
         monkeypatch.setenv("AUTOR_PLOT_ASPECT_RATIO", "auto")
         cfg = _build_config(data, tmp_path)
         assert cfg.plot.host == "https://env.example"
-        assert cfg.plot.model == "nano-banana-pro"
-        assert cfg.plot.image_size == "1K"
+        assert cfg.plot.model == "gpt-image-2"
         assert cfg.plot.aspect_ratio == "auto"
 
 
@@ -250,11 +247,23 @@ class TestResolvedApiKey:
     def test_mineru_key_from_config(self, tmp_path):
         cfg = _build_config({"ingest": {"mineru_api_key": "mu-key"}}, tmp_path)
         assert cfg.resolved_mineru_api_key() == "mu-key"
+        assert cfg.resolved_mineru_api_keys() == ["mu-key"]
+
+    def test_mineru_keys_from_config_list(self, tmp_path):
+        cfg = _build_config({"ingest": {"mineru_api_keys": ["mu-key-1", "mu-key-2"]}}, tmp_path)
+        assert cfg.resolved_mineru_api_key() == "mu-key-1"
+        assert cfg.resolved_mineru_api_keys() == ["mu-key-1", "mu-key-2"]
 
     def test_mineru_key_from_env(self, tmp_path, monkeypatch):
         cfg = _build_config({}, tmp_path)
-        monkeypatch.setenv("MINERU_API_KEY", "mu-env")
-        assert cfg.resolved_mineru_api_key() == "mu-env"
+        monkeypatch.setenv("MINERU_API_KEYS", "mu-env-1,mu-env-2")
+        assert cfg.resolved_mineru_api_key() == "mu-env-1"
+        assert cfg.resolved_mineru_api_keys() == ["mu-env-1", "mu-env-2"]
+
+    def test_mineru_env_keys_win_over_config(self, tmp_path, monkeypatch):
+        cfg = _build_config({"ingest": {"mineru_api_keys": ["mu-cfg"]}}, tmp_path)
+        monkeypatch.setenv("MINERU_API_KEYS", "mu-env")
+        assert cfg.resolved_mineru_api_keys() == ["mu-env"]
 
     def test_s2_key_from_config(self, tmp_path):
         cfg = _build_config({"ingest": {"s2_api_key": "s2-cfg"}}, tmp_path)
@@ -323,6 +332,26 @@ class TestLoadConfig:
         cfg = load_config(tmp_path / "config.yaml")
         assert cfg.llm.model == "local-model"
         assert cfg.llm.timeout == 30  # preserved from base
+
+    def test_mineru_tokens_from_config_yaml_are_ignored(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "ingest:\n  mineru_api_keys:\n    - tracked-secret\n  mineru_api_key: tracked-single\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path / "config.yaml")
+        assert cfg.resolved_mineru_api_keys() == []
+
+    def test_mineru_tokens_from_local_yaml_are_used(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "ingest:\n  mineru_api_keys: []\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "config.local.yaml").write_text(
+            "ingest:\n  mineru_api_keys:\n    - local-one\n    - local-two\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path / "config.yaml")
+        assert cfg.resolved_mineru_api_keys() == ["local-one", "local-two"]
 
     def test_nonexistent_path_uses_defaults(self, tmp_path):
         cfg = load_config(tmp_path / "nonexistent.yaml")

@@ -85,10 +85,10 @@ _S: dict[str, dict[Lang, str]] = {
         "  按 Enter 跳过。",
     },
     "mineru_key_prompt": {
-        "en": "  MinerU cloud API key (register at https://mineru.net/apiManage/token).\n"
+        "en": "  MinerU cloud API key(s), comma-separated for multiple accounts (register at https://mineru.net/apiManage/token).\n"
         "  Without it: only .md files can be ingested, PDF conversion unavailable.\n"
         "  Press Enter to skip.",
-        "zh": "  MinerU 云 API key（注册 https://mineru.net/apiManage/token 获取）。\n"
+        "zh": "  MinerU 云 API key（多个账号用英文逗号分隔，注册 https://mineru.net/apiManage/token 获取）。\n"
         "  不配置：只能入库 .md 文件，不能直接处理 PDF。\n"
         "  按 Enter 跳过。",
     },
@@ -432,7 +432,8 @@ def _wizard_keys(root: Path, lang: Lang) -> None:
     print(t("mineru_key_prompt", lang))
     key = input("  > ").strip()
     if key:
-        local_data.setdefault("ingest", {})["mineru_api_key"] = key
+        keys = [item.strip() for item in key.replace("\n", ",").split(",") if item.strip()]
+        local_data.setdefault("ingest", {})["mineru_api_keys"] = keys
         changed = True
 
     # Contact email
@@ -479,8 +480,11 @@ llm:
 # Ingestion pipeline
 ingest:
   extractor: robust         # auto | regex | llm | robust
+  mineru_mode: hybrid       # local | cloud | hybrid
   mineru_endpoint: http://localhost:8000
   mineru_cloud_url: https://mineru.net/api/v4
+  mineru_api_keys: []       # sensitive tokens go in config.local.yaml or MINERU_API_KEYS
+  mineru_api_key: null      # legacy single key; keep null in config.yaml
   mineru_backend_local: pipeline      # pipeline | vlm-auto-engine | vlm-http-client | hybrid-auto-engine | hybrid-http-client
   mineru_model_version_cloud: pipeline # pipeline | vlm | MinerU-HTML
   mineru_lang: ch
@@ -488,6 +492,14 @@ ingest:
   mineru_enable_formula: true
   mineru_enable_table: true
   abstract_llm_mode: verify # off | fallback | verify
+  mineru_cloud_batch_size: 20
+  mineru_cloud_workers_per_token: 1
+  mineru_cloud_max_inflight_batches_per_token: 1
+  mineru_cloud_max_files_per_token_per_min: 35
+  mineru_cloud_max_result_queries_per_token_per_min: 600
+  mineru_cloud_poll_interval_seconds: 10
+  mineru_cloud_backoff_on_429_seconds: 60
+  mineru_cloud_backoff_max_seconds: 600
 
 # Semantic embeddings (gte-Qwen2-1.5B-instruct, auto-downloaded)
 embed:

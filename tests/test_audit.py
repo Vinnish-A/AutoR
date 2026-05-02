@@ -58,3 +58,27 @@ class TestAuditDetection:
             assert issue.severity in ("error", "warning", "info")
             assert issue.rule
             assert issue.message
+
+    def test_low_information_dir_name_is_reported(self, tmp_papers):
+        d = tmp_papers / "PMID-28753429-Cell"
+        d.mkdir()
+        (d / "meta.json").write_text(
+            json.dumps(
+                {
+                    "id": "low-info",
+                    "title": "Fusobacterium nucleatum promotes chemoresistance in colorectal cancer",
+                    "authors": ["Author"],
+                    "year": 2017,
+                    "journal": "Cell",
+                    "doi": "10.1000/lowinfo",
+                    "abstract": "Abstract.",
+                    "paper_type": "journal-article",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (d / "paper.md").write_text("# Fusobacterium nucleatum promotes chemoresistance\n\nLong enough content." * 20)
+
+        issues = audit_papers(tmp_papers)
+
+        assert any(i.paper_id == "PMID-28753429-Cell" and i.rule == "low_info_dir_name" for i in issues)

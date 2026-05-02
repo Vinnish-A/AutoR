@@ -15,8 +15,10 @@ from autor.index import build_index
 from autor.workspace import (
     add,
     create,
+    dedup,
     dump_metadata,
     export_metadata,
+    filter_resolved_by_scope,
     identify_exact,
     list_workspaces,
     read_paper_ids,
@@ -92,6 +94,71 @@ class TestAddResolved:
         assert len(added2) == 1
         assert added2[0]["id"] == "cccc-3333"
         assert read_paper_ids(ws_dir) == {"aaaa-1111", "bbbb-2222", "cccc-3333"}
+
+    def test_skips_dup_entries(self, tmp_path):
+        ws_dir = tmp_path / "ws"
+        create(ws_dir)
+
+        added = add(
+            ws_dir,
+            [],
+            tmp_path / "unused.db",
+            resolved=[
+                {"id": "dup-1111", "dir_name": "DUP-12345678"},
+                {"id": "ok-1111", "dir_name": "Smith-2023-Test"},
+            ],
+        )
+
+        assert [entry["id"] for entry in added] == ["ok-1111"]
+        assert read_paper_ids(ws_dir) == {"ok-1111"}
+
+
+class TestDedup:
+    def test_removes_dup_dir_names_and_repeated_ids(self, tmp_path, tmp_db):
+        ws_dir = tmp_path / "ws"
+        create(ws_dir)
+        entries = [
+            {"id": "aaaa-1111", "dir_name": "Smith-2023-Test"},
+            {"id": "aaaa-1111", "dir_name": "Smith-2023-Test"},
+            {"id": "dup-1111", "dir_name": "DUP-12345678"},
+        ]
+        (ws_dir / "papers.json").write_text(json.dumps(entries), encoding="utf-8")
+
+        result = dedup(ws_dir, tmp_db)
+
+        assert result["kept_count"] == 1
+        assert result["removed_count"] == 2
+        assert read_paper_ids(ws_dir) == {"aaaa-1111"}
+
+
+class TestScopeFilter:
+    def test_scope_filter_rejects_clear_off_scope_records(self, tmp_path):
+        papers_dir = tmp_path / "papers"
+        papers_dir.mkdir()
+        in_dir = papers_dir / "Smith-2023-Microbiome"
+        in_dir.mkdir()
+        (in_dir / "meta.json").write_text(
+            json.dumps({"title": "Intratumoral microbiome in gastric cancer", "abstract": "Tumor bacteria."}),
+            encoding="utf-8",
+        )
+        out_dir = papers_dir / "Wang-2023-Cardiology"
+        out_dir.mkdir()
+        (out_dir / "meta.json").write_text(
+            json.dumps({"title": "Cardiac immunotherapy", "abstract": "Heart failure."}),
+            encoding="utf-8",
+        )
+
+        kept, rejected = filter_resolved_by_scope(
+            [
+                {"id": "in", "dir_name": in_dir.name},
+                {"id": "out", "dir_name": out_dir.name},
+            ],
+            papers_dir,
+            "intratumoral microorganisms digestive cancer gastric colorectal pancreatic tumor microbiome",
+        )
+
+        assert [item["id"] for item in kept] == ["in"]
+        assert [item["id"] for item in rejected] == ["out"]
 
 
 class TestIdentifyExact:

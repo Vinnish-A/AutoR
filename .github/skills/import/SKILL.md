@@ -35,7 +35,7 @@ For Endnote XML files, automatically parses `internal-pdf://` links and matches 
 ### Automatic Post-Import Processing
 
 Default behavior (without `--no-convert`) automatically runs the full pipeline after import:
-1. **Batch PDF→MD**: cloud mode uses `convert_pdfs_cloud_batch()` for batch conversion (batch size controlled by `config.yaml` `ingest.mineru_batch_size`, default 20)
+1. **Batch PDF→MD**: cloud mode uses `convert_pdfs_cloud_batch()` for batch conversion (per-token batch size controlled by `config.yaml` `ingest.mineru_cloud_batch_size`, default 20)
 2. **Abstract backfill**: extracts missing abstracts from the Markdown
 3. **TOC + L3 extraction**: LLM extracts table of contents and conclusion sections
 4. **Embed + Index**: updates semantic vectors and full-text index

@@ -99,7 +99,7 @@ import-endnote / import-zotero — External reference manager import (full pipel
   sources/endnote.py | sources/zotero.py → parse metadata + match PDFs
     → pipeline.import_external() → DOI dedup + ingest + PDF copy + embed + index
     → pipeline.batch_convert_pdfs(enrich=True)
-       → batch PDF→MD (cloud batch API, batch size: config ingest.mineru_batch_size)
+       → batch PDF→MD (cloud batch API, per-token batch size: config ingest.mineru_cloud_batch_size)
        → abstract backfill + toc + l3 extraction + embed + index
 ```
 

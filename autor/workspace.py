@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import csv
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,6 +52,20 @@ def _write(ws_dir: Path, entries: list[dict]) -> None:
         encoding="utf-8",
     )
     tmp.replace(pj)
+
+
+def _is_dup_dir_name(dir_name: str | None) -> bool:
+    return str(dir_name or "").startswith("DUP-")
+
+
+def _read_meta_for_dir(papers_dir: Path, dir_name: str) -> dict:
+    meta_path = papers_dir / dir_name / "meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 # ============================================================================
@@ -115,6 +130,9 @@ def add(
             if missing:
                 raise ValueError(f"resolved[{idx}] is missing required keys {sorted(missing)}: {rec!r}")
             uid = rec["id"]
+            if _is_dup_dir_name(rec.get("dir_name")):
+                _log.warning("DUP 条目不加入工作区: %s", rec.get("dir_name"))
+                continue
             if uid in existing_ids:
                 continue
             entry = {"id": uid, "dir_name": rec["dir_name"], "added_at": now}
@@ -130,6 +148,9 @@ def add(
                 _log.warning("无法解析论文引用: %s", ref)
                 continue
             uid = record["id"]
+            if _is_dup_dir_name(record.get("dir_name")):
+                _log.warning("DUP 条目不加入工作区: %s", record.get("dir_name"))
+                continue
             if uid in existing_ids:
                 _log.debug("已存在，跳过: %s", ref)
                 continue
@@ -141,6 +162,124 @@ def add(
     if added:
         _write(ws_dir, entries)
     return added
+
+
+def dedup(ws_dir: Path, db_path: Path) -> dict[str, object]:
+    """Remove duplicate and DUP-prefixed records from a workspace.
+
+    The cleanup is intentionally conservative: records whose current registry
+    dir_name or saved dir_name starts with ``DUP-`` are removed, and repeated
+    UUIDs are collapsed to their first occurrence.
+    """
+    from autor.index import lookup_paper
+
+    entries = _read(ws_dir)
+    kept: list[dict] = []
+    removed: list[dict] = []
+    seen_ids: set[str] = set()
+    changed = False
+
+    for entry in entries:
+        paper_id = entry.get("id")
+        record = lookup_paper(db_path, paper_id) if paper_id else None
+        current_dir = record["dir_name"] if record else entry.get("dir_name", "")
+        reason = ""
+        if not paper_id:
+            reason = "missing_id"
+        elif paper_id in seen_ids:
+            reason = "duplicate_id"
+        elif _is_dup_dir_name(entry.get("dir_name")) or _is_dup_dir_name(current_dir):
+            reason = "dup_dir_name"
+
+        if reason:
+            removed_entry = dict(entry)
+            removed_entry["dedup_reason"] = reason
+            if current_dir:
+                removed_entry["current_dir_name"] = current_dir
+            removed.append(removed_entry)
+            changed = True
+            continue
+
+        if current_dir and current_dir != entry.get("dir_name"):
+            entry = dict(entry)
+            entry["dir_name"] = current_dir
+            changed = True
+        kept.append(entry)
+        seen_ids.add(paper_id)
+
+    if changed:
+        _write(ws_dir, kept)
+    return {"kept": kept, "removed": removed, "kept_count": len(kept), "removed_count": len(removed)}
+
+
+def classify_scope(meta: dict, scope: str, cfg=None) -> dict[str, object]:
+    """Classify whether one paper fits a topical workspace scope.
+
+    Uses the configured LLM when available. If no key is configured or the LLM
+    call fails, falls back to a transparent token-overlap heuristic and marks
+    low-overlap records as ``uncertain`` instead of silently excluding them.
+    """
+    title = str(meta.get("title") or "")
+    abstract = str(meta.get("abstract") or meta.get("summary") or "")
+    paper_text = f"{title}\n{abstract}".strip()
+    if not scope.strip():
+        return {"decision": "uncertain", "reason": "empty scope"}
+
+    if cfg is not None:
+        try:
+            if cfg.resolved_api_key():
+                from autor.metrics import call_llm
+
+                prompt = (
+                    "Classify whether this paper belongs in the target review workspace.\n"
+                    'Return JSON only: {"decision":"in_scope|out_of_scope|uncertain","reason":"..."}.\n\n'
+                    f"Scope:\n{scope}\n\nPaper title and abstract:\n{paper_text[:5000]}"
+                )
+                result = call_llm(prompt, cfg, purpose="workspace.scope_filter", max_tokens=300)
+                payload = json.loads(result.content)
+                decision = str(payload.get("decision") or "").lower()
+                if decision in {"in_scope", "out_of_scope", "uncertain"}:
+                    return {"decision": decision, "reason": str(payload.get("reason") or "")}
+        except Exception as e:
+            _log.warning("LLM scope check failed, using heuristic fallback: %s", e)
+
+    scope_tokens = {
+        t
+        for t in re.findall(r"[A-Za-z0-9]+", scope.lower())
+        if len(t) >= 4 and t not in {"with", "from", "into", "this", "that", "review", "paper", "cancer", "tumor"}
+    }
+    paper_tokens = set(re.findall(r"[A-Za-z0-9]+", paper_text.lower()))
+    overlap = sorted(scope_tokens & paper_tokens)
+    if len(overlap) >= 2:
+        return {"decision": "in_scope", "reason": f"scope token overlap: {', '.join(overlap[:8])}"}
+    if not overlap:
+        return {"decision": "out_of_scope", "reason": "no overlap with scope terms"}
+    return {"decision": "uncertain", "reason": f"weak scope token overlap: {', '.join(overlap)}"}
+
+
+def filter_resolved_by_scope(
+    resolved: list[dict],
+    papers_dir: Path,
+    scope: str,
+    *,
+    cfg=None,
+    keep_uncertain: bool = True,
+) -> tuple[list[dict], list[dict]]:
+    """Filter pre-resolved workspace additions by title/abstract topical scope."""
+    kept: list[dict] = []
+    rejected: list[dict] = []
+    for rec in resolved:
+        meta = _read_meta_for_dir(papers_dir, str(rec.get("dir_name") or ""))
+        verdict = classify_scope(meta, scope, cfg=cfg)
+        decision = verdict["decision"]
+        annotated = dict(rec)
+        annotated["scope_decision"] = decision
+        annotated["scope_reason"] = verdict.get("reason", "")
+        if decision == "in_scope" or (decision == "uncertain" and keep_uncertain):
+            kept.append(annotated)
+        else:
+            rejected.append(annotated)
+    return kept, rejected
 
 
 def remove(ws_dir: Path, paper_refs: list[str], db_path: Path) -> list[dict]:

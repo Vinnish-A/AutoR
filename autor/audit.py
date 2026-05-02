@@ -81,6 +81,7 @@ def audit_papers(papers_dir: Path) -> list[Issue]:
 
         # -- Directory name format --
         _check_filename(issues, pid, data)
+        _check_dir_name_quality(issues, pid, data)
 
         # -- DOI tracking --
         doi = (data.get("doi") or "").strip().lower()
@@ -177,6 +178,44 @@ def _check_filename(issues: list[Issue], pid: str, data: dict) -> None:
         issues.append(
             Issue(
                 pid, "warning", "filename_year_mismatch", f"目录名年份 ({file_year}) 与 JSON 年份 ({json_year}) 不一致"
+            )
+        )
+
+
+def _check_dir_name_quality(issues: list[Issue], pid: str, data: dict) -> None:
+    """Flag low-information names such as PMID-28753429-Cell."""
+    if pid.startswith("DUP-"):
+        issues.append(Issue(pid, "warning", "dup_dir_name", "DUP 条目仍存在于 data/papers，建议清理或合并"))
+        return
+
+    tokens = [t for t in re.split(r"[-_\s]+", pid) if t]
+    informative = [
+        t
+        for t in tokens
+        if len(t) >= 4
+        and not t.isdigit()
+        and t.lower() not in {"pmid", "doi", "cell", "nature", "science", "journal", "article", "open", "access"}
+    ]
+    title = str(data.get("title") or "")
+    title_words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9]{3,}", title)}
+    title_overlap = {t.lower() for t in informative} & title_words
+
+    low_info = False
+    reason = ""
+    if re.match(r"^PMID-\d+-(?:Cell|Nature|Science|Journal|Article|Open-Access)$", pid, flags=re.IGNORECASE):
+        low_info = True
+        reason = "目录名只有 PMID 与期刊/通用词，缺少作者、年份或标题信息"
+    elif len(informative) < 2 and title_words and not title_overlap:
+        low_info = True
+        reason = "目录名与标题缺少可识别重叠，信息量偏低"
+
+    if low_info:
+        issues.append(
+            Issue(
+                pid,
+                "warning",
+                "low_info_dir_name",
+                f"{reason}；建议重新补全元数据并运行 rename/refetch。",
             )
         )
 

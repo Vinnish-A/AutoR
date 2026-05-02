@@ -1,8 +1,8 @@
 """
-plot.py -- Nano Banana image generation client
-==============================================
+plot.py -- GPT Image 2 generation client
+========================================
 
-Submit image-generation jobs to a Nano Banana-compatible relay service,
+Submit image-generation jobs to a GPT Image 2-compatible relay service,
 poll for completion, and persist downloaded images into ``workspace/``.
 """
 
@@ -22,37 +22,28 @@ from autor.ingest.metadata import _sanitize_for_filename
 
 _log = logging.getLogger(__name__)
 
-_DRAW_PATH = "/v1/draw/nano-banana"
+_DRAW_PATH = "/v1/draw/completions"
 _RESULT_PATH = "/v1/draw/result"
 _VALID_MODELS = {
-    "nano-banana-2",
-    "nano-banana-2-cl",
-    "nano-banana-2-4k-cl",
-    "nano-banana-fast",
-    "nano-banana",
-    "nano-banana-pro",
-    "nano-banana-pro-vt",
-    "nano-banana-pro-cl",
-    "nano-banana-pro-vip",
-    "nano-banana-pro-4k-vip",
+    "gpt-image-2",
 }
-_VALID_IMAGE_SIZES = {"1K", "2K", "4K"}
 _VALID_ASPECT_RATIOS = {
     "auto",
     "1:1",
-    "16:9",
-    "9:16",
-    "4:3",
-    "3:4",
     "3:2",
     "2:3",
+    "16:9",
+    "9:16",
     "5:4",
     "4:5",
+    "4:3",
+    "3:4",
     "21:9",
-    "1:4",
-    "4:1",
-    "1:8",
-    "8:1",
+    "9:21",
+    "1:3",
+    "3:1",
+    "2:1",
+    "1:2",
 }
 _EXT_BY_CONTENT_TYPE = {
     "image/png": ".png",
@@ -71,17 +62,15 @@ def build_payload(
     cfg,
     *,
     model: str | None = None,
-    image_size: str | None = None,
     aspect_ratio: str | None = None,
     urls: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build and validate a Nano Banana request payload.
+    """Build and validate a GPT Image 2 request payload.
 
     Args:
         prompt: Image-generation prompt.
         cfg: Loaded autor config object.
         model: Optional model override.
-        image_size: Optional size override.
         aspect_ratio: Optional aspect-ratio override.
         urls: Optional reference image URLs.
 
@@ -99,10 +88,6 @@ def build_payload(
     if resolved_model not in _VALID_MODELS:
         raise PlotError(f"不支持的模型: {resolved_model}")
 
-    resolved_size = (image_size or cfg.plot.image_size).strip().upper()
-    if resolved_size not in _VALID_IMAGE_SIZES:
-        raise PlotError(f"不支持的 imageSize: {resolved_size}")
-
     resolved_ratio = (aspect_ratio or cfg.plot.aspect_ratio).strip()
     if resolved_ratio not in _VALID_ASPECT_RATIOS:
         raise PlotError(f"不支持的 aspectRatio: {resolved_ratio}")
@@ -112,7 +97,6 @@ def build_payload(
         "model": resolved_model,
         "prompt": text,
         "aspectRatio": resolved_ratio,
-        "imageSize": resolved_size,
         "webHook": "-1",
         "shutProgress": True,
     }
@@ -141,7 +125,6 @@ def generate_plot(
     host: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
-    image_size: str | None = None,
     aspect_ratio: str | None = None,
     timeout: int | None = None,
     poll_interval: int | None = None,
@@ -158,7 +141,6 @@ def generate_plot(
         host: Optional API host override.
         api_key: Optional API key override.
         model: Optional model override.
-        image_size: Optional size override.
         aspect_ratio: Optional aspect ratio override.
         timeout: Optional total timeout override in seconds.
         poll_interval: Optional polling interval override in seconds.
@@ -180,7 +162,6 @@ def generate_plot(
         prompt,
         cfg,
         model=model,
-        image_size=image_size,
         aspect_ratio=aspect_ratio,
         urls=urls,
     )
@@ -230,7 +211,6 @@ def generate_plot(
         "output_dir": str(output_root),
         "prompt": payload["prompt"],
         "model": payload["model"],
-        "image_size": payload["imageSize"],
         "aspect_ratio": payload["aspectRatio"],
     }
 

@@ -485,6 +485,55 @@ def identify(
         return _error("internal", str(e))
 
 
+@mcp.tool()
+def identify_coverage(
+    pmids: list[str] | None = None,
+    dois: list[str] | None = None,
+    workspace: str | None = None,
+) -> str:
+    """Check a canonical PMID/DOI seed list against the local library and workspace."""
+    try:
+        from autor import workspace as ws_mod
+        from autor.index import lookup_paper as _lookup
+
+        cfg = _get_cfg()
+        workspace_ids: set[str] | None = None
+        if workspace is not None:
+            if not ws_mod.validate_workspace_name(workspace):
+                return _error("invalid_workspace", f"Invalid workspace name: {workspace}")
+            workspace_ids = ws_mod.read_paper_ids(cfg._root / "workspace" / workspace)
+
+        identifiers = list(dict.fromkeys([*(pmids or []), *(dois or [])]))
+        records: list[dict] = []
+        missing: list[str] = []
+        for ident in identifiers:
+            record = _lookup(cfg.index_db, ident)
+            if not record:
+                missing.append(ident)
+                continue
+            item = dict(record)
+            item["query"] = ident
+            if workspace_ids is not None:
+                item["in_workspace"] = item["id"] in workspace_ids
+            records.append(item)
+        return json.dumps(
+            {
+                "count": len(identifiers),
+                "found_count": len(records),
+                "missing_count": len(missing),
+                "workspace": workspace,
+                "records": records,
+                "missing": missing,
+            },
+            ensure_ascii=False,
+        )
+    except FileNotFoundError:
+        return _error("index_not_found", "Index not built. Run: autor index")
+    except Exception as e:
+        _log.exception("identify_coverage failed")
+        return _error("internal", str(e))
+
+
 # ============================================================================
 #  Citation graph tools (3)
 # ============================================================================
@@ -770,6 +819,8 @@ def workspace_show(name: str) -> str:
         from autor import workspace as ws_mod
 
         cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
         ws_dir = cfg._root / "workspace" / name
         if not ws_dir.exists():
             return _error("not_found", f"Workspace not found: {name}")
@@ -792,6 +843,8 @@ def workspace_add(name: str, paper_refs: list[str]) -> str:
         from autor import workspace as ws_mod
 
         cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
         ws_dir = cfg._root / "workspace" / name
         if not ws_dir.exists():
             ws_mod.create(ws_dir)
@@ -799,6 +852,25 @@ def workspace_add(name: str, paper_refs: list[str]) -> str:
         return json.dumps({"added": added}, ensure_ascii=False)
     except Exception as e:
         _log.exception("workspace_add failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_dedup(name: str) -> str:
+    """Remove DUP-prefixed and repeated records from a workspace."""
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        result = ws_mod.dedup(ws_dir, cfg.index_db)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_dedup failed")
         return _error("internal", str(e))
 
 
@@ -814,6 +886,8 @@ def workspace_remove(name: str, paper_refs: list[str]) -> str:
         from autor import workspace as ws_mod
 
         cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
         ws_dir = cfg._root / "workspace" / name
         if not ws_dir.exists():
             return _error("not_found", f"Workspace not found: {name}")
@@ -836,10 +910,9 @@ def plot(
     name: str | None = None,
     urls: list[str] | None = None,
     model: str | None = None,
-    image_size: str | None = None,
     aspect_ratio: str | None = None,
 ) -> str:
-    """Generate an image via Nano Banana and save it into workspace/.
+    """Generate an image via GPT Image 2 and save it into workspace/.
 
     Args:
         prompt: Image-generation prompt text.
@@ -847,7 +920,6 @@ def plot(
         name: Optional output filename stem.
         urls: Optional reference image URLs.
         model: Optional model override.
-        image_size: Optional size override.
         aspect_ratio: Optional aspect-ratio override.
     """
     try:
@@ -864,7 +936,6 @@ def plot(
             name=name,
             urls=urls,
             model=model,
-            image_size=image_size,
             aspect_ratio=aspect_ratio,
         )
         return json.dumps(summary, ensure_ascii=False)
@@ -881,6 +952,7 @@ def plot(
 def export_bibtex(
     paper_refs: list[str] | None = None,
     all_papers: bool = False,
+    workspace: str | None = None,
     year: str | None = None,
     journal: str | None = None,
 ) -> str:
@@ -891,15 +963,27 @@ def export_bibtex(
     Args:
         paper_refs: List of paper identifiers (optional).
         all_papers: If True, export all papers.
+        workspace: Workspace name to export all workspace papers.
         year: Year filter (when all_papers=True).
         journal: Journal name filter (when all_papers=True).
     """
     try:
+        from autor import workspace as ws_mod
         from autor.export import export_bibtex as _export
 
         cfg = _get_cfg()
 
-        if paper_refs and not all_papers:
+        if workspace:
+            if paper_refs or all_papers:
+                return _error("invalid_args", "Use only one of workspace, paper_refs, or all_papers.")
+            if not ws_mod.validate_workspace_name(workspace):
+                return _error("invalid_workspace", f"Invalid workspace name: {workspace}")
+            ws_dir = cfg._root / "workspace" / workspace
+            if not ws_dir.exists():
+                return _error("not_found", f"Workspace not found: {workspace}")
+            dir_names = list(ws_mod.read_dir_names(ws_dir, cfg.index_db))
+            bibtex = _export(cfg.papers_dir, paper_ids=dir_names, year=year, journal=journal)
+        elif paper_refs and not all_papers:
             # Export specific papers by dir_name
             dir_names = []
             for ref in paper_refs:
@@ -1234,14 +1318,14 @@ def attach_pdf(paper_ref: str, pdf_path: str) -> str:
         if check_server(cfg.ingest.mineru_endpoint):
             result = convert_pdf(dest_pdf, mineru_opts)
         else:
-            api_key = cfg.resolved_mineru_api_key()
-            if not api_key:
+            api_keys = cfg.resolved_mineru_api_keys()
+            if not api_keys:
                 return _error("missing_config",
                               "MinerU not reachable and no cloud API key configured.")
             from autor.ingest.mineru import convert_pdf_cloud
             result = convert_pdf_cloud(
                 dest_pdf, mineru_opts,
-                api_key=api_key,
+                api_key=api_keys[0],
                 cloud_url=cfg.ingest.mineru_cloud_url,
             )
 
@@ -1333,6 +1417,7 @@ def enrich_l3(paper_ref: str, force: bool = False) -> str:
     """
     try:
         from autor.loader import enrich_l3 as _enrich_l3
+        from autor.papers import read_meta
 
         cfg = _get_cfg()
         paper_d = _resolve_paper_dir(paper_ref)
@@ -1343,7 +1428,17 @@ def enrich_l3(paper_ref: str, force: bool = False) -> str:
             return _error("not_found", f"No paper.md in {paper_d.name}")
 
         success = _enrich_l3(json_path, md_path, cfg, force=force)
-        return json.dumps({"status": "ok" if success else "failed", "paper": paper_d.name})
+        meta = read_meta(paper_d)
+        return json.dumps(
+            {
+                "status": "ok" if success else "failed",
+                "paper": paper_d.name,
+                "l3_status": meta.get("l3_last_attempt_status"),
+                "stage": meta.get("l3_last_attempt_stage"),
+                "reason": meta.get("l3_last_attempt_reason"),
+                "method": meta.get("l3_last_attempt_method"),
+            }
+        )
     except ValueError as e:
         return _error("not_found", str(e))
     except Exception as e:

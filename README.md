@@ -141,10 +141,10 @@ Main config: `config.yaml` (tracked in git). Sensitive data: `config.local.yaml`
 | Key | Purpose | How to get it |
 |-----|---------|---------------|
 | `DEEPSEEK_API_KEY` | LLM — metadata extraction, content enrichment, academic discussion | [DeepSeek](https://platform.deepseek.com/) (default) or any OpenAI-compatible API |
-| `MINERU_API_KEY` | PDF → structured Markdown | Free from [mineru.net](https://mineru.net/apiManage/token), or [self-host](https://github.com/opendatalab/MinerU) |
+| `MINERU_API_KEYS` | PDF → structured Markdown cloud tokens, comma-separated for parallel accounts | Free from [mineru.net](https://mineru.net/apiManage/token), or [self-host](https://github.com/opendatalab/MinerU) |
 | `NCBI_API_KEY` | PubMed / E-utilities PMID lookup with higher rate limits | [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/) |
 
-> **Both are optional.** Without an LLM key, autor falls back to regex-only extraction. Without a MinerU key, place `.md` files directly into `data/inbox/`.
+> **Both are optional.** Without an LLM key, autor falls back to regex-only extraction. Without MinerU tokens, place `.md` files directly into `data/inbox/` or run a local MinerU endpoint. MinerU tokens belong in `config.local.yaml` or `MINERU_API_KEYS`, not `config.yaml`.
 
 The default embedding model is `Alibaba-NLP/gte-Qwen2-1.5B-instruct`. On the main library, `autor embed` now reads full `paper.md`, chunks it with overlap, and stores chunk-level evidence vectors for retrieval. The default download source is Hugging Face; if this model is mirrored in your environment, you can switch `embed.source`.
 
