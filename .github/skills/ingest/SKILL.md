@@ -1,6 +1,6 @@
 ---
 name: ingest
-description: Ingest papers from inbox into the knowledge base. Runs the pipeline to convert PDFs via MinerU (auto-splits long PDFs), extract metadata, deduplicate by DOI, and build indexes. Supports three inboxes - regular papers, theses, and general documents. Use when the user has new papers to process, wants to run the pipeline, or rebuild indexes.
+description: Ingest papers from inbox into the knowledge base. Runs the pipeline to convert PDFs via MinerU (auto-splits long PDFs), extract metadata, deduplicate by DOI, generate L3 paper-level conclusion cards by default, and update the node-level FTS5 evidence index. Supports three inboxes - regular papers, theses, and general documents.
 ---
 
 # Ingest Papers
@@ -10,10 +10,11 @@ Process PDF papers from the inbox into the knowledge base, or run the full proce
 ## Execution Logic
 
 1. Choose a pipeline preset based on user intent:
-   - **Ingest new papers** (default): use the `ingest` preset
-   - **Full processing**: use the `full` preset (ingest + content enrichment + rebuild indexes)
-   - **Rebuild indexes only**: use the `reindex` preset
+   - **Ingest new papers** (default): use the `ingest` preset; it now includes L3 paper-level conclusion-card generation and FTS5 indexing
+   - **Full processing**: use the `full` preset when an explicit TOC should also be saved before/alongside L3
+   - **Rebuild FTS5 index only**: use the `reindex` preset
    - **Content enrichment only**: use the `enrich` preset
+   - **Retrieval refresh**: use the `index` step; no embedding step exists
 
 2. Run the pipeline command:
 
@@ -44,7 +45,7 @@ Available presets: `full` | `ingest` | `enrich` | `reindex`
 User says: "I added some new papers to the inbox; please ingest them."
 → Run `pipeline ingest`
 
-User says: "Process all new papers completely, including TOC and conclusion extraction."
+User says: "Process all new papers completely, including explicit TOC extraction."
 → Run `pipeline full`
 
 User says: "I have some technical reports in inbox-doc."
@@ -52,3 +53,6 @@ User says: "I have some technical reports in inbox-doc."
 
 User says: "Rebuild the index."
 → Run `pipeline reindex`
+
+User says: "I need semantic search / vector search."
+→ Explain vector search has been removed, then use `autor search ...` or `autor research ...` for auditable evidence retrieval

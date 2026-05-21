@@ -61,7 +61,6 @@ def _strip_mineru_secret_fields(data: dict) -> dict:
         return data
     cleaned = dict(data)
     cleaned_ingest = dict(ingest)
-    cleaned_ingest.pop("mineru_api_key", None)
     cleaned_ingest.pop("mineru_api_keys", None)
     cleaned["ingest"] = cleaned_ingest
     return cleaned
@@ -125,42 +124,6 @@ class SearchConfig:
 
 
 @dataclass
-class EmbedConfig:
-    """语义向量嵌入配置。
-
-    Attributes:
-        model: Sentence Transformer 模型名称或 HuggingFace ID。
-        cache_dir: 本地模型缓存目录。
-        device: 推理设备，``"auto"`` | ``"cpu"`` | ``"cuda"``。
-        top_k: ``autor vsearch`` 默认返回条数。
-        source: 模型下载源，``"modelscope"`` | ``"huggingface"``。
-        hf_endpoint: HuggingFace 镜像地址（可选），用于无代理或私有镜像。
-    """
-
-    model: str = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-    cache_dir: str = "~/.cache/modelscope/hub/models"
-    device: str = "auto"
-    top_k: int = 10
-    source: str = "huggingface"
-    hf_endpoint: str = ""
-
-
-@dataclass
-class TopicsConfig:
-    """BERTopic 主题建模配置。
-
-    Attributes:
-        min_topic_size: HDBSCAN 最小聚类大小。
-        nr_topics: 目标主题数，``0`` 表示 ``"auto"``。
-        model_dir: 主题模型保存目录（相对于项目根目录）。
-    """
-
-    min_topic_size: int = 5
-    nr_topics: int = 0  # 0 means "auto"
-    model_dir: str = "data/topic_model"
-
-
-@dataclass
 class LogConfig:
     """日志与指标配置。
 
@@ -189,7 +152,6 @@ class IngestConfig:
         mineru_cloud_url: MinerU 云 API 基础 URL。
         mineru_mode: MinerU 调度模式，``"local"`` | ``"cloud"`` | ``"hybrid"``。
         mineru_api_keys: MinerU 云 API 密钥列表，建议放 config.local.yaml 或环境变量。
-        mineru_api_key: 旧版单 MinerU 云 API 密钥，建议放 config.local.yaml 或环境变量。
         mineru_backend_local: 本地 MinerU backend（``pipeline`` | ``vlm-auto-engine`` |
             ``vlm-http-client`` | ``hybrid-auto-engine`` | ``hybrid-http-client``）。
         mineru_model_version_cloud: 云端 MinerU model_version（``pipeline`` | ``vlm`` |
@@ -212,14 +174,13 @@ class IngestConfig:
         chunk_page_limit: 超长 PDF 自动切分的页数阈值。超过此值的 PDF 在 MinerU
             转换前自动拆分为多个短 PDF，转换后合并为单个 Markdown。
         mineru_cloud_batch_size: MinerU 云 API 每个 token 每批提交文件数上限，默认 20。
-        mineru_cloud_workers_per_token: 每个 token 的 worker 数。当前默认 1。
+        mineru_cloud_workers_per_token: 预留配置；当前云端并发为每个 token 一个 source。
         mineru_cloud_max_inflight_batches_per_token: 每个 token 最大在途 batch 数。
         mineru_cloud_max_files_per_token_per_min: 每个 token 每分钟提交文件上限。
         mineru_cloud_max_result_queries_per_token_per_min: 每个 token 每分钟结果查询上限。
         mineru_cloud_poll_interval_seconds: 云端 batch 结果查询间隔。
         mineru_cloud_backoff_on_429_seconds: 单个 token 遇到 429 后初始退避秒数。
         mineru_cloud_backoff_max_seconds: 单个 token 最大退避秒数。
-        mineru_batch_size: 旧配置名，兼容 ``mineru_cloud_batch_size``。
     """
 
     extractor: str = "robust"  # regex | auto | llm | robust
@@ -227,7 +188,6 @@ class IngestConfig:
     mineru_endpoint: str = "http://localhost:8000"
     mineru_cloud_url: str = "https://mineru.net/api/v4"
     mineru_api_keys: list[str] = field(default_factory=list)
-    mineru_api_key: str = ""
     mineru_backend_local: str = "pipeline"
     mineru_model_version_cloud: str = "pipeline"
     mineru_lang: str = "ch"
@@ -247,24 +207,6 @@ class IngestConfig:
     mineru_cloud_poll_interval_seconds: int = 10
     mineru_cloud_backoff_on_429_seconds: int = 60
     mineru_cloud_backoff_max_seconds: int = 600
-    mineru_batch_size: int = 20  # legacy alias for cloud batch size
-
-
-@dataclass
-class TranslateConfig:
-    """论文自动翻译配置。
-
-    Attributes:
-        auto_translate: 入库时是否自动翻译非目标语言的论文。
-        target_lang: 翻译目标语言代码（``"zh"`` | ``"en"`` 等）。
-        chunk_size: 分块翻译时每块最大字符数（避免超 LLM token 限制）。
-        concurrency: 并发翻译数。
-    """
-
-    auto_translate: bool = False
-    target_lang: str = "zh"
-    chunk_size: int = 4000
-    concurrency: int = 5
 
 
 @dataclass
@@ -311,9 +253,7 @@ class Config:
         paths: 文件路径配置。
         llm: LLM 后端配置。
         ingest: 数据入库配置。
-        embed: 语义向量配置。
-        search: 全文检索配置。
-        topics: BERTopic 主题建模配置。
+        search: 节点级 FTS5 证据检索配置。
         log: 日志与指标配置。
         plot: GPT Image 2 绘图配置。
         zotero: Zotero 集成配置。
@@ -322,11 +262,8 @@ class Config:
     paths: PathsConfig = field(default_factory=PathsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
-    embed: EmbedConfig = field(default_factory=EmbedConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
-    topics: TopicsConfig = field(default_factory=TopicsConfig)
     log: LogConfig = field(default_factory=LogConfig)
-    translate: TranslateConfig = field(default_factory=TranslateConfig)
     plot: PlotConfig = field(default_factory=PlotConfig)
     zotero: ZoteroConfig = field(default_factory=ZoteroConfig)
 
@@ -352,11 +289,6 @@ class Config:
     def metrics_db_path(self) -> Path:
         """指标数据库的绝对路径。"""
         return (self._root / self.log.metrics_db).resolve()
-
-    @property
-    def topics_model_dir(self) -> Path:
-        """BERTopic 模型保存目录的绝对路径。"""
-        return (self._root / self.topics.model_dir).resolve()
 
     def ensure_dirs(self) -> None:
         """创建运行所需的目录（data/papers, data/inbox, data/pending, workspace 等）。"""
@@ -430,8 +362,7 @@ class Config:
     def resolved_mineru_api_key(self) -> str:
         """按优先级查找 MinerU 云 API key。
 
-        查找顺序: ``MINERU_API_KEYS`` → config ``ingest.mineru_api_keys`` →
-        config ``ingest.mineru_api_key``。
+        查找顺序: ``MINERU_API_KEYS`` → config ``ingest.mineru_api_keys``。
 
         Returns:
             第一个 API key 字符串，未找到则返回空字符串。
@@ -447,7 +378,6 @@ class Config:
         查找顺序:
         1. 环境变量 ``MINERU_API_KEYS``（逗号分隔）
         2. config.local.yaml ``ingest.mineru_api_keys``
-        3. config.local.yaml ``ingest.mineru_api_key``（旧单 key）
 
         Returns:
             去重后的 API key 列表，未找到则返回空列表。
@@ -458,8 +388,7 @@ class Config:
         cfg_keys = _dedupe_nonempty(self.ingest.mineru_api_keys)
         if cfg_keys:
             return cfg_keys
-        single = (self.ingest.mineru_api_key or "").strip()
-        return [single] if single else []
+        return []
 
     def resolved_s2_api_key(self) -> str:
         """按优先级查找 Semantic Scholar API key。
@@ -617,7 +546,6 @@ def _build_config(data: dict, root: Path) -> Config:
         mineru_endpoint=ingest_data.get("mineru_endpoint", "http://localhost:8000"),
         mineru_cloud_url=ingest_data.get("mineru_cloud_url", "https://mineru.net/api/v4"),
         mineru_api_keys=_dedupe_nonempty(ingest_data.get("mineru_api_keys") or []),
-        mineru_api_key=ingest_data.get("mineru_api_key") or "",
         mineru_backend_local=ingest_data.get("mineru_backend_local", "pipeline"),
         mineru_model_version_cloud=ingest_data.get("mineru_model_version_cloud", "pipeline"),
         mineru_lang=ingest_data.get("mineru_lang", "ch"),
@@ -628,9 +556,7 @@ def _build_config(data: dict, root: Path) -> Config:
         contact_email=ingest_data.get("contact_email") or "",
         s2_api_key=ingest_data.get("s2_api_key") or "",
         ncbi_api_key=ingest_data.get("ncbi_api_key") or "",
-        mineru_cloud_batch_size=int(
-            ingest_data.get("mineru_cloud_batch_size") or ingest_data.get("mineru_batch_size") or 20
-        ),
+        mineru_cloud_batch_size=int(ingest_data.get("mineru_cloud_batch_size") or 20),
         mineru_cloud_workers_per_token=max(1, int(ingest_data.get("mineru_cloud_workers_per_token") or 1)),
         mineru_cloud_max_inflight_batches_per_token=max(
             1, int(ingest_data.get("mineru_cloud_max_inflight_batches_per_token") or 1)
@@ -646,38 +572,12 @@ def _build_config(data: dict, root: Path) -> Config:
             1, int(ingest_data.get("mineru_cloud_backoff_on_429_seconds") or 60)
         ),
         mineru_cloud_backoff_max_seconds=max(1, int(ingest_data.get("mineru_cloud_backoff_max_seconds") or 600)),
-        mineru_batch_size=int(ingest_data.get("mineru_batch_size") or ingest_data.get("mineru_cloud_batch_size") or 20),
         chunk_page_limit=int(ingest_data.get("chunk_page_limit") or 100),
-    )
-
-    embed_data = data.get("embed", {}) or {}
-    embed_source = os.environ.get("AUTOR_EMBED_SOURCE") or embed_data.get("source") or "huggingface"
-    embed_cache_dir = (
-        os.environ.get("AUTOR_EMBED_CACHE_DIR") or embed_data.get("cache_dir") or "~/.cache/modelscope/hub/models"
-    )
-    embed_model = os.environ.get("AUTOR_EMBED_MODEL") or embed_data.get("model") or "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-    hf_endpoint = (
-        os.environ.get("AUTOR_HF_ENDPOINT") or embed_data.get("hf_endpoint") or os.environ.get("HF_ENDPOINT") or ""
-    )
-    embed = EmbedConfig(
-        model=embed_model,
-        cache_dir=embed_cache_dir,
-        device=embed_data.get("device", "auto"),
-        top_k=int(embed_data.get("top_k", 10)),
-        source=embed_source,
-        hf_endpoint=hf_endpoint,
     )
 
     search_data = data.get("search", {}) or {}
     search = SearchConfig(
         top_k=int(search_data.get("top_k", 20)),
-    )
-
-    topics_data = data.get("topics", {}) or {}
-    topics = TopicsConfig(
-        min_topic_size=int(topics_data.get("min_topic_size", 5)),
-        nr_topics=int(topics_data.get("nr_topics", 0)),
-        model_dir=topics_data.get("model_dir", "data/topic_model"),
     )
 
     log_data = data.get("logging", {}) or {}
@@ -687,14 +587,6 @@ def _build_config(data: dict, root: Path) -> Config:
         max_bytes=int(log_data.get("max_bytes", 10_000_000)),
         backup_count=int(log_data.get("backup_count", 3)),
         metrics_db=log_data.get("metrics_db", "data/metrics.db"),
-    )
-
-    translate_data = data.get("translate", {}) or {}
-    translate = TranslateConfig(
-        auto_translate=bool(translate_data.get("auto_translate", False)),
-        target_lang=translate_data.get("target_lang", "zh"),
-        chunk_size=int(translate_data.get("chunk_size", 4000)),
-        concurrency=max(1, int(translate_data.get("concurrency", 5))),
     )
 
     plot_data = data.get("plot", {}) or {}
@@ -718,11 +610,8 @@ def _build_config(data: dict, root: Path) -> Config:
         paths=paths,
         llm=llm,
         ingest=ingest,
-        embed=embed,
         search=search,
-        topics=topics,
         log=log,
-        translate=translate,
         plot=plot,
         zotero=zotero,
         _root=root,

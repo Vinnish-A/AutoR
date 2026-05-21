@@ -46,4 +46,4 @@ User says: "Give me the citation for Smith-2023-Turbulence."
 → Run `export bibtex "Smith-2023-Turbulence"`
 
 User says: "Export citations for DNS-related papers."
-→ First search with `usearch "DNS"`, extract directory names from the results, then run `export bibtex <dir1> <dir2> ...`
+→ First search with `search "DNS"`, extract directory names from the results, then run `export bibtex <dir1> <dir2> ...`

@@ -31,5 +31,41 @@ Verifies citations in AI-generated or human-written text against the knowledge b
 ## Workflow
 
 1. Create a workspace: use `/workspace` to organize relevant papers
-2. Use writing skills via Claude Code: `/<skill-name>`
-3. Output files are saved in `workspace/<name>/`
+2. Check evidence readiness before planning:
+
+```bash
+autor ws status <name> --papers
+autor ws export-evidence <name> -o workspace/<name>/evidence.json
+autor enrich-l3 --workspace <name> --only-missing
+```
+
+3. Optionally screen the workspace before writing:
+
+```bash
+autor ws screen <name> --criteria "topic boundary and exclusion rules" --target 150 -o workspace/<name>/screening.json
+```
+
+Add `--apply` only after inspecting the screening report.
+
+4. Generate the canonical planning skeleton:
+
+```bash
+autor ws plan-package <name> --title "Review title" --criteria "topic boundary"
+```
+
+This creates `references.bib`, `reference-map.json`, `review-plan.md`, `evidence-ledger.md`, and `table-figure-plan.md`. The files are a stable handoff scaffold, not a substitute for scholarly section planning.
+
+During planning, set `citation_policy` in `reference-map.json` for each retained paper: `must_cite`, `cite_if_relevant`, `background_only`, or `do_not_cite`.
+For figure planning, reserve 7-8 figures for a full review and 4-5 figures for a mini/focused review. Every planned figure should require PlotEnhance before generation and must be generated through `autor plot` / `autor.plot.generate_plot()` rather than manual drawing scripts.
+
+5. Use writing skills via Claude Code: `/<skill-name>`
+6. Before final export, check that required citation keys entered the manuscript:
+
+```bash
+autor ws citation-coverage <name> --manuscript workspace/<name>/write.md --require must_cite --fail-if-missing
+autor ws figure-status <name> --fail-if-missing
+```
+
+Use `--require retained` without `--fail-if-missing` when you want an audit of retained-but-unused literature.
+
+7. Output files are saved in `workspace/<name>/`

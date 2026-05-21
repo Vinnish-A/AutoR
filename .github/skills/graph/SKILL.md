@@ -27,6 +27,14 @@ autor citing "<paper-id>" [--ws NAME]
 autor shared-refs "<id1>" "<id2>" [--min N] [--ws NAME]
 ```
 
+### Workspace Citation-Network Sidecar
+
+```bash
+autor refetch --workspace <NAME>
+autor index --rebuild
+autor ws citation-network <NAME> [--min-shared 2]
+```
+
 Parameters:
 - `--min N` — include only references cited by at least N papers (default 2)
 - `--ws NAME` — limit scope to a specific workspace
@@ -35,7 +43,7 @@ Parameters:
 
 Reference data comes from Semantic Scholar. It must be fetched first via:
 - Automatic retrieval during ingestion
-- Running `refetch --all --force` for existing papers
+- Running `refetch --workspace <NAME>` for review workspaces, or `refetch --all --force` only when a full-library refresh is intended
 - Then running `index --rebuild` to update the citations table
 
 ## Examples

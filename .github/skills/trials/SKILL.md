@@ -19,7 +19,7 @@ It is suitable for requests like:
 
 - It is **not** a paper-ingestion tool; it retrieves trial-registry records, not entries for `data/papers/`
 - It **is** a workspace-level supporting-evidence tool; by default, all final outputs should be written to `workspace/<name>/trials/`
-- If the user later wants to draft a review, create a plan, or build tables, these trial outputs should live in the same workspace alongside files such as `review-plan.md` and `section-evidence.md`
+- If the user later wants to draft a review, create a plan, or build tables, these trial outputs should live in the same workspace and be mapped into `reference-map.json`, `evidence-ledger.md`, and `table-figure-plan.md`
 
 ## Prerequisites
 

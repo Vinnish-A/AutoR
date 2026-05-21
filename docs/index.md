@@ -7,13 +7,12 @@ AutoR is a research terminal built around AI coding agents. You interact with yo
 ## Features
 
 - **PDF Ingestion**: Convert PDFs to structured Markdown via MinerU (cloud or local)
-- **Hybrid Search**: FTS5 keyword search + FAISS semantic search + RRF fusion
-- **Topic Modeling**: BERTopic clustering with interactive HTML visualizations
+- **Auditable Search**: node-level SQLite FTS5 with evidence bundles, trace, and verify artifacts
 - **Citation Graph**: View references, citing papers, and shared references
 - **BibTeX Export**: Filtered export with standard citation formats
 - **Literature Exploration**: Multi-dimensional OpenAlex queries with isolated data
 - **Workspace Management**: Organize papers into subsets for focused work
-- **26 Agent Skills**: Literature review, paper writing, gap analysis, and more
+- **Agent Skills**: Literature review, paper writing, gap analysis, and more
 
 ## Quick Start
 

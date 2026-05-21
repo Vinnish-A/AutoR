@@ -1,11 +1,11 @@
 ---
 name: show
-description: View paper content at different detail levels. L1 (metadata), L2 (abstract), L3 (conclusion), L4 (full text). Use when the user wants to read a paper, see its abstract, conclusion, or full content.
+description: View paper content at different detail levels. L1 (metadata), L2 (abstract), L3 (paper-level conclusion card), L4 (full text). Use when the user wants to read a paper, see its abstract, L3 takeaway, or full content.
 ---
 
 # View Paper Content
 
-View the content of a specified paper in a layered structure. Supports four levels: L1 (metadata), L2 (abstract), L3 (conclusion), and L4 (full text).
+View the content of a specified paper in a layered structure. Supports four levels: L1 (metadata), L2 (abstract), L3 (paper-level conclusion card), and L4 (full text).
 
 ## Execution Logic
 
@@ -29,7 +29,7 @@ autor show "<paper-id>" --layer <N>
 |-------|---------|-------|
 | L1 | Metadata | title, authors, year, journal, doi |
 | L2 | Abstract | abstract |
-| L3 | Conclusion | conclusion (requires running enrich-l3 first) |
+| L3 | Paper-level conclusion card | takeaway, key findings, quantitative signals, limitations, and provenance when available |
 | L4 | Full text | complete Markdown |
 
 ## Examples

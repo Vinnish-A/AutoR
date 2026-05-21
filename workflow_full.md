@@ -1,5 +1,10 @@
 # Full Report on autor and Its Command Workflows
 
+> Migration note (2026-05-19): AutoR has removed vector/RAG storage. Any older
+> mentions of `autor embed`, `vsearch`, FAISS, semantic vectors, BERTopic over
+> `paper_vectors`, or hybrid keyword+vector retrieval are historical. Current
+> search uses node-level SQLite FTS5 and `autor research` evidence bundles.
+
 ## 1. Overall Positioning of the Project
 
 autor is not merely a "paper manager," but a piece of research knowledge infrastructure designed for AI agents. The core problem it solves is this: organizing scattered PDFs, Markdown files, metadata, citation relationships, semantic vectors, and topic structures into a local knowledge base that is searchable, traceable, writable, and callable by agents.
@@ -7,7 +12,7 @@ autor is not merely a "paper manager," but a piece of research knowledge infrast
 From the code structure, this repository mainly covers six things:
 
 1. Turning PDFs or Markdown into structured paper records.
-2. Completing metadata, abstracts, tables of contents, conclusions, citation counts, and other fields.
+2. Completing metadata, abstracts, tables of contents, L3 conclusion cards, citation counts, and other fields.
 3. Building multiple retrieval capabilities, including keyword search, semantic search, and hybrid search.
 4. Building citation graphs and topic models to support horizontal comparison and knowledge discovery.
 5. Providing a workspace mechanism that regroups papers from the main library by project for writing and export.
@@ -59,7 +64,7 @@ autor uses L1-L4 to load paper content in layers:
 
 1. L1: metadata, suitable for fast filtering.
 2. L2: abstract, suitable for initial topic scoping.
-3. L3: conclusion, suitable for quickly judging the paper's contributions and takeaways.
+3. L3: paper-level conclusion card, suitable for quickly judging the paper's contributions, quantitative signals, limitations, and takeaways.
 4. L4: full Markdown text, suitable for in-depth analysis, method reproduction, and extraction of figures and formulas.
 
 This layered design runs through the entire project and is the key abstraction behind both the CLI and agent workflows.
@@ -193,7 +198,7 @@ Applicable scenarios:
 
 Relationship to other commands:
 
-1. After migration, you usually need to rerun `pipeline reindex` or at least `embed` and `index`.
+1. After migration, you usually need to rerun `pipeline reindex` for the FTS5 index. Run `embed` separately only if you need semantic/vector search.
 
 Typical usage:
 
@@ -209,7 +214,7 @@ autor pipeline reindex
 
 ### 6.1 `pipeline`
 
-Purpose: the most important orchestration command in the entire project. It chains PDF/Markdown processing, deduplication, ingest, content enrichment, vectorization, and indexing into a pipeline.
+Purpose: the most important orchestration command in the entire project. It chains PDF/Markdown processing, deduplication, ingest, content enrichment, and FTS5 indexing into a pipeline. Semantic vectorization is opt-in to save time.
 
 It supports three scopes:
 
@@ -219,10 +224,12 @@ It supports three scopes:
 
 Built-in presets:
 
-1. `full = mineru, extract, dedup, ingest, toc, l3, embed, index`
-2. `ingest = mineru, extract, dedup, ingest, embed, index`
-3. `enrich = toc, l3, embed, index`
-4. `reindex = embed, index`
+1. `full = mineru, extract, dedup, ingest, toc, l3, index`
+2. `ingest = mineru, extract, dedup, ingest, l3, index`
+3. `enrich = toc, l3, index`
+4. `reindex = index`
+
+Use `autor embed` or `autor pipeline --steps embed,index` only when semantic/vector search or topic modeling is required.
 
 Parameters:
 
@@ -260,7 +267,9 @@ autor pipeline ingest
 autor pipeline full
 autor pipeline enrich --force
 autor pipeline reindex --rebuild
-autor pipeline --steps toc,l3,embed,index
+autor pipeline --steps toc,l3,index
+# Optional, only for semantic/vector search or topics:
+autor embed
 ```
 
 ### 6.2 `enrich-toc`
@@ -276,16 +285,18 @@ Parameters:
 Applicable scenarios:
 
 1. You want the agent to understand the section structure.
-2. You want to prepare for later conclusion extraction, section localization, or full-text reading.
+2. You want to prepare for later L3 generation, section localization, or full-text reading.
 
 Relationship to other commands:
 
 1. Often used together with `enrich-l3` and `show --layer 4`.
-2. Often triggered automatically by `pipeline full` or `pipeline enrich`.
+2. Often triggered automatically by `pipeline full` or `pipeline enrich`. Normal `pipeline ingest` generates L3 by default and may auto-generate TOC internally when needed for L3 localization.
 
 ### 6.3 `enrich-l3`
 
-Purpose: extract the conclusion section from the full text and write it into the L3 field of `meta.json`.
+Purpose: generate the L3 paper-level conclusion card and write it into `meta.json`.
+
+L3 first tries to locate an explicit conclusion/summary section. If no clear conclusion section exists, it synthesizes a constrained paper-level takeaway from abstract, results, discussion, highlights, figure captions, and table captions. The structured `l3` field records mode, confidence, source spans, key findings, quantitative signals, limitations, and warnings; `l3_conclusion` remains the compatibility display text.
 
 Parameters:
 
@@ -296,8 +307,8 @@ Parameters:
 
 Applicable scenarios:
 
-1. You want to read conclusions quickly without reading the full text.
-2. You want the agent to load only the most critical conclusions when writing a review or screening papers quickly.
+1. You want to judge a paper quickly without reading the full text.
+2. You want the agent to load the most critical takeaway, quantitative signals, and limitations when writing a review or screening papers quickly.
 
 Relationship with `show`:
 
@@ -409,7 +420,7 @@ Applicable scenarios:
 
 ### 6.9 `attach-pdf`
 
-Purpose: add a PDF to an already ingested entry that lacks `paper.md`, then automatically generate Markdown, abstracts, vectors, and indexes.
+Purpose: add a PDF to an already ingested entry that lacks `paper.md`, then automatically generate Markdown, backfill the abstract, and update the FTS5 index. Semantic vectors remain opt-in via `autor embed`.
 
 Parameters:
 
@@ -423,7 +434,7 @@ Internal actions:
 3. Normalize the output as `paper.md`.
 4. Clean up redundant intermediate files while keeping `images/`.
 5. If metadata lacks an abstract, try to extract one from the Markdown.
-6. Trigger incremental `embed` and `index`.
+6. Trigger L3 generation and incremental FTS5 indexing. Semantic vectors remain opt-in via `autor embed`.
 
 Applicable scenarios:
 
@@ -597,13 +608,13 @@ Output logic:
 
 1. It always prints the L1 header first.
 2. `--layer 2` then prints the abstract.
-3. `--layer 3` prints the conclusion, provided `enrich-l3` has already been run.
+3. `--layer 3` prints the L3 conclusion card, provided `enrich-l3` has already been run.
 4. `--layer 4` prints the full Markdown text.
 
 Applicable scenarios:
 
 1. Reading more deeply after finding a result.
-2. Quickly browsing the abstract or conclusion.
+2. Quickly browsing the abstract or L3 takeaway.
 3. The basic entry point when an agent performs close reading paper by paper.
 
 ### 7.8 `top-cited`
@@ -908,18 +919,18 @@ Steps:
 2. Put theses into `data/inbox-thesis/`.
 3. Put technical reports or lecture notes into `data/inbox-doc/`.
 4. Run `autor pipeline ingest`.
-5. If you also want TOC and conclusions to be filled automatically, run `autor pipeline full`, or simply start with `full` from the beginning.
+5. L3 conclusion cards are generated by default. If you also want explicit TOC records saved for every paper, run `autor pipeline full`, or simply start with `full` from the beginning.
 
 Outputs:
 
 1. Formal entries go into `data/papers/`.
 2. Suspicious entries go into `data/pending/`.
-3. Vectors and indexes are updated in sync.
+3. L3 conclusion cards are generated and the FTS5 index is updated. Vectors are built only when `autor embed` is run explicitly.
 
 When to use `ingest` versus `full`:
 
-1. `ingest`: you only want papers to enter the library and become searchable first.
-2. `full`: you already know this batch is worth deeper downstream use and want TOC/L3 filled in one shot.
+1. `ingest`: you want papers to enter the library, receive L3 conclusion cards, and become searchable first.
+2. `full`: you already know this batch is worth deeper downstream use and want TOC explicitly saved alongside L3 in one shot.
 
 ### Workflow C: Migrate an Existing Literature Library from an External Reference Manager
 
@@ -943,6 +954,7 @@ Standard remediation steps after migration:
 2. `autor refetch --all`
 3. `autor backfill-abstract`
 4. `autor pipeline reindex`
+5. Optional: `autor embed` if semantic/vector search or topics are needed.
 
 This is the recommended order for "cleaning up an old library."
 
@@ -958,12 +970,13 @@ Recommended order:
 4. `autor backfill-abstract`
 5. `autor rename --all`
 6. `autor pipeline reindex`
+7. Optional: `autor embed` if semantic/vector search or topics are needed.
 
 Why this order:
 
 1. Start with `audit` to find the problems.
 2. Fix the key metadata first, so API completion and abstract backfilling can work on correct information.
-3. Rebuild indexes and vectors in a unified way at the end.
+3. Rebuild the FTS5 index at the end. Rebuild vectors only if semantic/vector search or topics are needed.
 
 ### Workflow E: Do Everyday Retrieval and Layered Reading
 
@@ -1073,7 +1086,7 @@ Steps:
 
 1. First ensure the metadata exists through Endnote/Zotero import or manual `repair`.
 2. After obtaining the PDF, run: `autor attach-pdf <paper_id> /path/to/file.pdf`
-3. The system automatically generates `paper.md`, fills in the abstract, and updates `embed` and `index`.
+3. The system automatically generates `paper.md`, fills in the abstract, generates L3, and updates the FTS5 index.
 
 Applicable scenarios:
 
@@ -1186,7 +1199,7 @@ autor ws export gbm-review -o workspace/gbm-review/references.bib
 Together with Agent Skills:
 
 1. `search`: retrieve candidate papers.
-2. `show`: read abstracts, conclusions, and full text layer by layer.
+2. `show`: read abstracts, L3 conclusion cards, and full text layer by layer.
 3. `literature-review`: generate a review draft from a workspace.
 4. `paper-writing`: write sections such as the introduction, related work, and discussion.
 5. `citation-check`: verify whether citations in the writing are real and match the local library.
@@ -1223,7 +1236,7 @@ The corresponding data flow should be:
 2. `pull`: write Zotero entries and attachment references into a manifest without copying PDFs.
 3. `materialize`: create a symlink or copy for a small number of entries.
 4. `attach-pdf` or a dedicated derive command: generate `paper.md` for materialized PDFs.
-5. `embed/index/topics/ws`: continue along autor's existing pipeline.
+5. `index/ws`: continue with fast keyword search and workspace organization; run `embed` only before semantic search or topics.
 
 Compared with repeatedly doing full `import-zotero` migrations, this approach has the following advantages:
 
@@ -1261,7 +1274,7 @@ autor fully connects paper files, metadata, citation relationships, semantic ind
 If stated more concretely, it delivers five layers of capability:
 
 1. Storage layer: normalize papers and documents into `data/papers/`, or materialize them from upstream systems such as Zotero into local sidecars and derived knowledge objects.
-2. Processing layer: use LLMs, APIs, MinerU, abstract backfilling, and conclusion extraction to turn raw PDFs into actionable research objects.
+2. Processing layer: use LLMs, APIs, MinerU, abstract backfilling, and L3 conclusion-card generation to turn raw PDFs into actionable research objects.
 3. Retrieval layer: provide keyword, semantic, and hybrid search plus filtering.
 4. Structure layer: provide citation graphs and topic modeling so users can understand the literature through group structure.
 5. Output layer: provide workspaces and BibTeX export so analytical results can flow directly into writing and research production.

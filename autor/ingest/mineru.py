@@ -81,6 +81,7 @@ import argparse
 import concurrent.futures
 import json
 import logging
+import re
 import shutil
 import sys
 import threading
@@ -113,6 +114,10 @@ VALID_CLOUD_MODEL_VERSIONS = ["pipeline", "vlm", "MinerU-HTML"]
 DEFAULT_BACKEND = "pipeline"
 DEFAULT_LANG = "ch"
 API_TIMEOUT = 600  # PDF parsing can take a long time
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+_MD_IMAGE_LINE_RE = re.compile(r"^[ \t]*!\[[^\]]*\]\([^)]+\)[ \t]*(?:\n|$)", re.MULTILINE)
+_MD_IMAGE_INLINE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 
 
 # ============================================================================
@@ -224,6 +229,7 @@ class ConvertOptions:
         start_page: 起始页（0-indexed）。
         end_page: 结束页（0-indexed）。
         save_content_list: 是否同时保存 content_list JSON。
+        discard_images: 是否丢弃 MinerU 图片产物并剥离 Markdown 图片引用。
         force: 是否强制重新转换已有 ``.md`` 的文件。
         dry_run: 预览模式，不写文件。
     """
@@ -239,6 +245,7 @@ class ConvertOptions:
     start_page: int = 0
     end_page: int = 99999
     save_content_list: bool = False
+    discard_images: bool = True
     force: bool = False
     dry_run: bool = False
 
@@ -361,6 +368,10 @@ def convert_pdf(pdf_path: Path, opts: ConvertOptions) -> ConvertResult:
         result.error = f"No markdown content in response. Keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
         return result
 
+    if opts.discard_images:
+        md_content = strip_markdown_images(md_content)
+        _delete_image_artifacts(out_dir)
+
     # Write markdown
     md_path.write_text(md_content, encoding="utf-8")
     result.success = True
@@ -424,6 +435,31 @@ def _extract_field(data, field_name):
             if isinstance(entry, dict) and field_name in entry:
                 return entry[field_name]
     return data.get(field_name)
+
+
+def strip_markdown_images(text: str) -> str:
+    """Remove Markdown/HTML image references while preserving surrounding text."""
+    cleaned = _MD_IMAGE_LINE_RE.sub("", text or "")
+    cleaned = _MD_IMAGE_INLINE_RE.sub("", cleaned)
+    cleaned = _HTML_IMG_RE.sub("", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip() + ("\n" if cleaned.strip() else "")
+
+
+def _is_image_artifact(path_name: str) -> bool:
+    path = Path(path_name)
+    parts = {part.lower() for part in path.parts}
+    return path.suffix.lower() in IMAGE_SUFFIXES or "images" in parts or path.name.lower().endswith("_images")
+
+
+def _delete_image_artifacts(root: Path) -> None:
+    """Delete image files and MinerU image directories under ``root``."""
+    if not root.exists():
+        return
+    for p in sorted(root.rglob("*"), key=lambda x: len(x.parts), reverse=True):
+        if p.is_dir() and (p.name == "images" or p.name.endswith("_images") or p.name.endswith("_mineru_images")):
+            shutil.rmtree(p, ignore_errors=True)
+        elif p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES:
+            p.unlink(missing_ok=True)
 
 
 # ============================================================================
@@ -592,11 +628,13 @@ def convert_pdf_cloud(
             return result
 
         if state == "done":
-            md_content = _download_cloud_result(item, out_dir)
+            md_content = _download_cloud_result(item, out_dir, discard_images=opts.discard_images)
             if md_content is None:
                 result.error = f"无法从云端结果提取 Markdown。响应键: {list(item.keys())}"
                 result.elapsed_seconds = time.time() - t0
                 return result
+            if opts.discard_images:
+                _delete_image_artifacts(out_dir)
 
             md_path.write_text(md_content, encoding="utf-8")
             result.success = True
@@ -794,6 +832,184 @@ def convert_pdfs_cloud_batch(
     return final_results
 
 
+def convert_pdfs_mixed_batch(
+    pdf_paths: list[Path],
+    opts: ConvertOptions,
+    *,
+    use_local: bool,
+    api_key: str | None = None,
+    api_keys: list[str] | None = None,
+    cloud_url: str = CLOUD_API_URL,
+    batch_size: int = _DEFAULT_CLOUD_BATCH_SIZE,
+    max_files_per_token_per_min: int = 35,
+    max_result_queries_per_token_per_min: int = 600,
+    poll_interval_seconds: int = CLOUD_POLL_INTERVAL,
+    backoff_on_429_seconds: int = 60,
+    backoff_max_seconds: int = 600,
+) -> list[ConvertResult]:
+    """Convert PDFs with local MinerU and one cloud worker per token in parallel.
+
+    Hybrid scheduling treats the local MinerU endpoint as one source and each
+    cloud token as one additional source. All sources pull from a shared queue,
+    so faster sources naturally process more PDFs.
+    """
+    if not pdf_paths:
+        return []
+
+    resolved_keys = [key.strip() for key in (api_keys or ([api_key] if api_key else [])) if key and key.strip()]
+    if not use_local and not resolved_keys:
+        return [
+            ConvertResult(pdf_path=pdf_path, md_path=(opts.output_dir or pdf_path.parent) / f"{pdf_path.stem}.md", error="未配置可用 MinerU 源")
+            for pdf_path in pdf_paths
+        ]
+
+    cloud_workers = [
+        MinerUCloudTokenWorkerState(
+            token_id=f"mineru_token_{idx + 1}",
+            token=token,
+            queue=Queue(),
+            files_limiter=SlidingWindowRateLimiter(max_files_per_token_per_min),
+            queries_limiter=SlidingWindowRateLimiter(max_result_queries_per_token_per_min),
+        )
+        for idx, token in enumerate(resolved_keys)
+    ]
+    shared_queue: Queue[MinerUCloudJob] = Queue()
+    results: list[ConvertResult | None] = [None] * len(pdf_paths)
+    lock = threading.Lock()
+    completed = 0
+
+    def mark_result(index: int, result: ConvertResult) -> None:
+        nonlocal completed
+        with lock:
+            if results[index] is None:
+                results[index] = result
+                completed += 1
+
+    def is_complete() -> bool:
+        with lock:
+            return completed >= len(pdf_paths)
+
+    def requeue_jobs(jobs: list[MinerUCloudJob]) -> None:
+        for job in jobs:
+            shared_queue.put(job)
+
+    for index, pdf_path in enumerate(pdf_paths):
+        shared_queue.put(MinerUCloudJob(index=index, pdf_path=pdf_path))
+
+    source_count = (1 if use_local else 0) + len(cloud_workers)
+    _log.info(
+        "Starting MinerU mixed batch: %d PDFs, %d sources (%slocal, %d cloud tokens), batch_size=%d",
+        len(pdf_paths),
+        source_count,
+        "" if use_local else "no ",
+        len(cloud_workers),
+        batch_size,
+    )
+
+    def get_job(timeout: float = 1.0) -> MinerUCloudJob | None:
+        try:
+            return shared_queue.get(timeout=timeout)
+        except Empty:
+            return None
+
+    def local_worker_loop() -> None:
+        while not is_complete():
+            job = get_job()
+            if job is None:
+                continue
+            try:
+                result = convert_pdf(job.pdf_path, opts)
+            except Exception as exc:
+                _log.exception("local MinerU failed while processing %s", job.pdf_path.name)
+                result = ConvertResult(
+                    pdf_path=job.pdf_path,
+                    md_path=(opts.output_dir or job.pdf_path.parent) / f"{job.pdf_path.stem}.md",
+                    error=f"本地 MinerU worker 异常: {exc}",
+                )
+            mark_result(job.index, result)
+
+    def cloud_worker_loop(state: MinerUCloudTokenWorkerState) -> None:
+        while not is_complete():
+            if state.in_cooldown():
+                sleep_for = max(0.25, (state.cooldown_until - datetime.now(timezone.utc)).total_seconds())
+                time.sleep(min(sleep_for, 2.0))
+                continue
+
+            capacity = min(batch_size, state.files_limiter.available_capacity())
+            if capacity <= 0:
+                time.sleep(0.5)
+                continue
+
+            first_job = get_job()
+            if first_job is None:
+                continue
+            batch = [first_job]
+            while len(batch) < capacity:
+                try:
+                    batch.append(shared_queue.get_nowait())
+                except Empty:
+                    break
+
+            state.files_limiter.record(len(batch))
+            state.inflight_batches += 1
+            try:
+                chunk_results = _convert_chunk_cloud(
+                    [job.pdf_path for job in batch],
+                    opts,
+                    api_key=state.token,
+                    cloud_url=cloud_url,
+                    token_id=state.token_id,
+                    query_limiter=state.queries_limiter,
+                    poll_interval_seconds=poll_interval_seconds,
+                )
+                state.consecutive_429 = 0
+                state.daily_file_count += len(batch)
+                for job, result in zip(batch, chunk_results):
+                    mark_result(job.index, result)
+            except MinerUCloudRateLimitError:
+                state.consecutive_429 += 1
+                backoff = min(backoff_max_seconds, backoff_on_429_seconds * (2 ** (state.consecutive_429 - 1)))
+                state.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=backoff)
+                _log.warning("%s received HTTP 429; cooldown %ss", state.token_id, backoff)
+                requeue_jobs(batch)
+            except Exception as exc:
+                _log.exception("%s failed while processing a MinerU mixed batch", state.token_id)
+                for job in batch:
+                    mark_result(
+                        job.index,
+                        ConvertResult(
+                            pdf_path=job.pdf_path,
+                            md_path=(opts.output_dir or job.pdf_path.parent) / f"{job.pdf_path.stem}.md",
+                            error=f"MinerU 云端 batch worker 异常: {exc}",
+                        ),
+                    )
+            finally:
+                state.inflight_batches = max(0, state.inflight_batches - 1)
+
+    max_workers = source_count
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mineru-mixed") as pool:
+        futures = []
+        if use_local:
+            futures.append(pool.submit(local_worker_loop))
+        futures.extend(pool.submit(cloud_worker_loop, state) for state in cloud_workers)
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+    final_results: list[ConvertResult] = []
+    for idx, result in enumerate(results):
+        if result is None:
+            final_results.append(
+                ConvertResult(
+                    pdf_path=pdf_paths[idx],
+                    md_path=(opts.output_dir or pdf_paths[idx].parent) / f"{pdf_paths[idx].stem}.md",
+                    error="MinerU mixed 任务未完成",
+                )
+            )
+        else:
+            final_results.append(result)
+    return final_results
+
+
 def _convert_chunk_cloud(
     pdf_paths: list[Path],
     opts: ConvertOptions,
@@ -963,17 +1179,17 @@ def _convert_chunk_cloud(
             state = item.get("state", "")
 
             if state == "done":
-                # Per-file output dir for images etc.
+                # Per-file output dir for non-image cloud assets.
                 file_out_dir = out_dir / did
                 file_out_dir.mkdir(parents=True, exist_ok=True)
-                md_content = _download_cloud_result(item, file_out_dir)
+                md_content = _download_cloud_result(item, file_out_dir, discard_images=opts.discard_images)
                 if md_content is None:
                     results[did].error = "无法从云端结果提取 Markdown"
                 else:
                     md_path = results[did].md_path
                     md_path.write_text(md_content, encoding="utf-8")
-                    # Move assets from per-file subdir to out_dir (flat)
-                    _flatten_assets(file_out_dir, out_dir, did)
+                    # Move non-image assets from per-file subdir to out_dir (flat).
+                    _flatten_assets(file_out_dir, out_dir, did, discard_images=opts.discard_images)
                     results[did].success = True
                     results[did].md_size = len(md_content.encode("utf-8"))
                     _log.info(
@@ -1008,21 +1224,24 @@ def _convert_chunk_cloud(
     return list(results.values())
 
 
-def _flatten_assets(src_dir: Path, out_dir: Path, data_id: str) -> None:
-    """Move images/ and other assets from per-file subdir to out_dir, namespaced by data_id."""
+def _flatten_assets(src_dir: Path, out_dir: Path, data_id: str, *, discard_images: bool = True) -> None:
+    """Move non-image assets from per-file subdir to out_dir, namespaced by data_id."""
     images_src = src_dir / "images"
     if images_src.is_dir():
-        # Move entire images dir, namespaced to avoid collisions
-        images_dst = out_dir / f"{data_id}_images"
-        if images_dst.exists():
-            import shutil
-
-            shutil.rmtree(str(images_dst))
-        images_src.rename(images_dst)
+        if discard_images:
+            shutil.rmtree(images_src, ignore_errors=True)
+        else:
+            images_dst = out_dir / f"{data_id}_images"
+            if images_dst.exists():
+                shutil.rmtree(str(images_dst))
+            images_src.rename(images_dst)
 
     # Move other assets (layout.json, content_list.json, origin.pdf)
     for f in src_dir.iterdir():
         if f.is_file():
+            if discard_images and _is_image_artifact(f.name):
+                f.unlink(missing_ok=True)
+                continue
             dest = out_dir / f"{data_id}_{f.name}"
             f.rename(dest)
 
@@ -1033,17 +1252,18 @@ def _flatten_assets(src_dir: Path, out_dir: Path, data_id: str) -> None:
         pass
 
 
-def _download_cloud_result(item: dict, out_dir: Path) -> str | None:
-    """Download markdown (and images) from cloud API result.
+def _download_cloud_result(item: dict, out_dir: Path, *, discard_images: bool = True) -> str | None:
+    """Download markdown and non-image assets from cloud API result.
 
     Tries multiple response formats: direct md_content field,
-    full_zip_url (download zip and extract all files), or md_url.
+        full_zip_url (download zip and extract non-image files), or md_url.
 
     CDN download bypasses HTTP proxy (domestic CDN + proxy = SSL errors).
 
     Args:
         item: Single extract result dict from cloud API.
-        out_dir: Directory to extract images and other assets into.
+        out_dir: Directory to extract non-image assets into.
+        discard_images: When true, skip image files and strip image references.
 
     Returns:
         Markdown text, or ``None`` on failure.
@@ -1051,9 +1271,9 @@ def _download_cloud_result(item: dict, out_dir: Path) -> str | None:
     # Direct markdown content
     md = item.get("md_content")
     if isinstance(md, str) and md.strip():
-        return md
+        return strip_markdown_images(md) if discard_images else md
 
-    # Download zip and extract all files (md + images/)
+    # Download zip and extract markdown plus non-image assets.
     zip_url = item.get("full_zip_url")
     if zip_url:
         try:
@@ -1071,10 +1291,14 @@ def _download_cloud_result(item: dict, out_dir: Path) -> str | None:
                         if name.endswith(".md"):
                             md_content = zf.read(name).decode("utf-8")
                         else:
-                            # Extract all assets (images/, layout.json, etc.)
+                            if discard_images and _is_image_artifact(name):
+                                continue
                             dest = out_dir / name
                             dest.parent.mkdir(parents=True, exist_ok=True)
                             dest.write_bytes(zf.read(name))
+                if md_content and discard_images:
+                    md_content = strip_markdown_images(md_content)
+                    _delete_image_artifacts(out_dir)
                 return md_content
         except Exception as e:
             _log.debug("failed to download/extract zip result: %s", e)
@@ -1085,7 +1309,7 @@ def _download_cloud_result(item: dict, out_dir: Path) -> str | None:
         try:
             resp = requests.get(md_url, timeout=60, proxies={"http": None, "https": None})
             if resp.status_code == 200:
-                return resp.text
+                return strip_markdown_images(resp.text) if discard_images else resp.text
         except Exception as e:
             _log.debug("failed to download markdown from %s: %s", md_url, e)
 
@@ -1203,7 +1427,7 @@ def _merge_chunk_results(
 
     Handles:
     - Markdown text concatenation
-    - Image file deduplication/renaming (``c{idx}_{name}`` prefix)
+    - Image reference removal
     - Error aggregation for partial failures
 
     Args:
@@ -1216,7 +1440,6 @@ def _merge_chunk_results(
     """
     merged = ConvertResult(pdf_path=original_pdf)
     final_md_path = output_dir / (original_pdf.stem + ".md")
-    final_images_dir = output_dir / "images"
 
     md_parts: list[str] = []
     errors: list[str] = []
@@ -1233,35 +1456,15 @@ def _merge_chunk_results(
             errors.append(f"chunk {idx}: md file not found")
             continue
 
-        chunk_md = cr.md_path.read_text(encoding="utf-8", errors="replace")
+        chunk_md = strip_markdown_images(cr.md_path.read_text(encoding="utf-8", errors="replace"))
 
-        # Find chunk's images directory
-        chunk_images_dir = None
         for candidate in [
             cr.md_path.parent / "images",
             cr.md_path.parent / f"{cr.md_path.stem}_mineru_images",
             cr.md_path.parent / f"{cr.md_path.stem}_images",
         ]:
             if candidate.is_dir():
-                chunk_images_dir = candidate
-                break
-
-        if chunk_images_dir and any(chunk_images_dir.iterdir()):
-            final_images_dir.mkdir(parents=True, exist_ok=True)
-            for img_file in sorted(chunk_images_dir.iterdir()):
-                if not img_file.is_file():
-                    continue
-                new_name = f"c{idx:02d}_{img_file.name}"
-                new_path = final_images_dir / new_name
-                shutil.copy2(img_file, new_path)
-                # Remap image references in markdown
-                old_ref = f"images/{img_file.name}"
-                new_ref = f"images/{new_name}"
-                chunk_md = chunk_md.replace(old_ref, new_ref)
-                # Also handle _mineru_images/ variant
-                for prefix in [f"{cr.md_path.stem}_mineru_images", f"{cr.md_path.stem}_images"]:
-                    old_ref2 = f"{prefix}/{img_file.name}"
-                    chunk_md = chunk_md.replace(old_ref2, new_ref)
+                shutil.rmtree(candidate, ignore_errors=True)
 
         md_parts.append(chunk_md)
 
@@ -1270,7 +1473,7 @@ def _merge_chunk_results(
         merged.elapsed_seconds = total_elapsed
         return merged
 
-    final_md = "\n\n".join(md_parts)
+    final_md = strip_markdown_images("\n\n".join(md_parts))
     final_md_path.write_text(final_md, encoding="utf-8")
 
     merged.success = True
@@ -1322,6 +1525,7 @@ def _convert_long_pdf(pdf_path: Path, opts: ConvertOptions, chunk_size: int = DE
             formula_enable=opts.formula_enable,
             table_enable=opts.table_enable,
             save_content_list=opts.save_content_list,
+            discard_images=opts.discard_images,
             force=opts.force,
             dry_run=opts.dry_run,
         )
@@ -1360,12 +1564,71 @@ def _convert_long_pdf_cloud(
         formula_enable=opts.formula_enable,
         table_enable=opts.table_enable,
         save_content_list=opts.save_content_list,
+        discard_images=opts.discard_images,
     )
     batch_results = convert_pdfs_cloud_batch(
         chunk_paths,
         chunk_opts,
         api_key=api_key,
         cloud_url=cloud_url,
+    )
+
+    merged = _merge_chunk_results(batch_results, pdf_path, out_dir)
+
+    if merged.success and chunks_dir.exists():
+        shutil.rmtree(chunks_dir)
+        _log.debug("cleaned up chunks dir: %s", chunks_dir)
+
+    return merged
+
+
+def _convert_long_pdf_mixed(
+    pdf_path: Path,
+    opts: ConvertOptions,
+    *,
+    use_local: bool,
+    api_keys: list[str],
+    cloud_url: str,
+    chunk_size: int = DEFAULT_CHUNK_PAGES,
+    batch_size: int = _DEFAULT_CLOUD_BATCH_SIZE,
+    max_files_per_token_per_min: int = 35,
+    max_result_queries_per_token_per_min: int = 600,
+    poll_interval_seconds: int = CLOUD_POLL_INTERVAL,
+    backoff_on_429_seconds: int = 60,
+    backoff_max_seconds: int = 600,
+) -> ConvertResult:
+    """Handle a long PDF via local + cloud sources: split → mixed batch → merge."""
+    out_dir = opts.output_dir if opts.output_dir else pdf_path.parent
+    chunks_dir = out_dir / f".{pdf_path.stem}_chunks"
+
+    chunk_paths = _split_pdf(pdf_path, chunk_size=chunk_size, output_dir=chunks_dir)
+
+    chunk_opts = ConvertOptions(
+        api_url=opts.api_url,
+        output_dir=chunks_dir,
+        backend=opts.backend,
+        cloud_model_version=opts.cloud_model_version,
+        lang=opts.lang,
+        parse_method=opts.parse_method,
+        formula_enable=opts.formula_enable,
+        table_enable=opts.table_enable,
+        save_content_list=opts.save_content_list,
+        discard_images=opts.discard_images,
+        force=opts.force,
+        dry_run=opts.dry_run,
+    )
+    batch_results = convert_pdfs_mixed_batch(
+        chunk_paths,
+        chunk_opts,
+        use_local=use_local,
+        api_keys=api_keys,
+        cloud_url=cloud_url,
+        batch_size=batch_size,
+        max_files_per_token_per_min=max_files_per_token_per_min,
+        max_result_queries_per_token_per_min=max_result_queries_per_token_per_min,
+        poll_interval_seconds=poll_interval_seconds,
+        backoff_on_429_seconds=backoff_on_429_seconds,
+        backoff_max_seconds=backoff_max_seconds,
     )
 
     merged = _merge_chunk_results(batch_results, pdf_path, out_dir)
@@ -1497,6 +1760,7 @@ def _build_options(args: argparse.Namespace) -> ConvertOptions:
         force=getattr(args, "force", False),
         dry_run=getattr(args, "dry_run", False),
         save_content_list=getattr(args, "save_content_list", False),
+        discard_images=True,
     )
     if hasattr(args, "output_dir") and args.output_dir:
         opts.output_dir = Path(args.output_dir).resolve()

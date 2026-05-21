@@ -53,6 +53,12 @@ You are not just passively reading the text; you are a fact-checking investigato
 - If the same opening frame could introduce three sections with only noun substitution, judge it as a seed failure rather than a wording problem.
 - **Directive**: Rebuild the opening from a fresh seed anchored to the section's retained conclusion, strongest contradiction, or practical decision point.
 
+### 7. The Dash-Cadence Audit
+- Scan for em dashes (`—`) and sentence-level double hyphens (`--`). Ignore ordinary hyphenated terms, minus signs, page ranges, and numeric en dashes.
+- Flag any paragraph with more than one dash break, adjacent paragraphs that both use dash breaks, or a manuscript that exceeds roughly two dash breaks per 1,000 words.
+- Treat repeated dash compression as AI-flavored cadence when it substitutes for real causal, contrastive, or evidentiary structure.
+- **Directive**: Do not ask for cosmetic replacement only. Require the writer to decide the function of each dash-heavy sentence: split independent claims with a period; use a semicolon or colon for tight logical relation; use commas or parentheses for minor apposition; rewrite the sentence when the dash is masking weak synthesis. Preserve only rare dashes that carry necessary interruption or decisive contrast.
+
 ## Output Format: The Mandatory Revision Ticket
 
 Do not output a conversational critique. Do not rewrite the text yourself in full. Output a **Revision Ticket** that the `write` or `paper-writing` skill must execute.
@@ -71,6 +77,10 @@ List exactly which sentences misrepresent or over-extrapolate the evidence.
 List exact phrases or sentences that are hollow, evasive, or flowery, and command their deletion.
 - *Delete:* "It is crucial to consider the myriad of factors..."
 - *Replace with:* Nothing, or a direct statement of the next active mechanism. 
+
+Include dash-cadence mandates here when relevant:
+- *Flag:* "Paragraph 4 uses two em dashes and the next paragraph opens with another dash construction."
+- *Replace with:* "Split the first dash sentence into two claims and convert the second into a colon-led explanation; keep no more than one dash in the section unless the retained dash carries necessary interruption."
 
 ### 4. Structural Synthesis Mandates
 Identify where the writer just "listed" studies and tell them how to compress them.

@@ -288,8 +288,20 @@ def _download_results(result: dict[str, Any], output_dir: Path, stem: str, *, ti
 
 
 def _download_one(url: str, output_dir: Path, stem: str, *, timeout: int) -> Path:
-    resp = requests.get(url, timeout=timeout)
-    resp.raise_for_status()
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            # Some result CDNs fail through local HTTPS proxies with EOF errors.
+            resp = requests.get(url, timeout=timeout, proxies={"http": None, "https": None})
+            resp.raise_for_status()
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == 3:
+                raise
+            time.sleep(2 * attempt)
+    else:
+        raise PlotError(f"图片下载失败: {last_error}")
     ext = _guess_extension(url, resp.headers.get("Content-Type"))
     path = output_dir / f"{stem}{ext}"
     path.write_bytes(resp.content)

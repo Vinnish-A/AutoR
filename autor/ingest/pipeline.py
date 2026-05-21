@@ -4,14 +4,14 @@ pipeline.py — 可组合步骤流水线
 
 步骤（scope）：
   inbox  — 每个 PDF 依次执行：mineru → extract → dedup → ingest
-  papers — 每篇已入库论文执行：toc → l3
+  papers — 每篇已入库论文执行：toc / l3（按预设或 steps）
   global — 全局执行一次：index
 
 预设：
-  full    = mineru, extract, dedup, ingest, toc, l3, embed, index
-  ingest  = mineru, extract, dedup, ingest, embed, index
-  enrich  = toc, l3, embed, index
-  reindex = embed, index
+  full    = mineru, extract, dedup, ingest, toc, l3, index
+  ingest  = mineru, extract, dedup, ingest, l3, index
+  enrich  = toc, l3, index
+  reindex = index
 
 用法（CLI）：
   autor pipeline full
@@ -164,11 +164,36 @@ def step_office_convert(ctx: InboxCtx) -> StepResult:
         return StepResult.FAIL
 
 
+def _mineru_sources(cfg: Config, *, local_available: bool | None = None) -> tuple[bool, list[str]]:
+    """Return enabled MinerU sources as ``(use_local, cloud_api_keys)``.
+
+    ``hybrid`` means local MinerU and all configured cloud tokens may run
+    together. ``local`` keeps the legacy cloud fallback only when local MinerU is
+    unavailable. ``cloud`` uses cloud tokens only.
+    """
+    from autor.ingest.mineru import check_server
+
+    mode = getattr(cfg.ingest, "mineru_mode", "hybrid")
+    if local_available is None:
+        local_available = mode != "cloud" and check_server(cfg.ingest.mineru_endpoint)
+
+    api_keys = cfg.resolved_mineru_api_keys()
+    use_local = mode != "cloud" and local_available
+
+    if mode == "cloud":
+        return False, api_keys
+    if mode == "hybrid":
+        return use_local, api_keys
+    # Preserve the previous fallback behavior for local mode if local is down.
+    return use_local, [] if use_local else api_keys
+
+
 def step_mineru(ctx: InboxCtx) -> StepResult:
     """PDF → Markdown 转换（MinerU）。
 
     md-only 入库项（无 PDF）自动跳过。已有同名 ``.md`` 时也跳过。
-    本地 MinerU 不可达时自动 fallback 到云 API（需配置 ``mineru_api_keys``）。
+    ``hybrid`` 模式下本地 MinerU 与所有云端 token 并行；本地不可达时自动
+    fallback 到云 API（需配置 ``mineru_api_keys``）。
     超长 PDF（超过 ``chunk_page_limit`` 页）自动切分后逐段转换再合并。
 
     Args:
@@ -181,9 +206,11 @@ def step_mineru(ctx: InboxCtx) -> StepResult:
         ConvertOptions,
         _convert_long_pdf,
         _convert_long_pdf_cloud,
+        _convert_long_pdf_mixed,
         _get_pdf_page_count,
         check_server,
         convert_pdf,
+        convert_pdfs_mixed_batch,
     )
 
     # md-only entry (no PDF): skip MinerU entirely
@@ -226,23 +253,18 @@ def step_mineru(ctx: InboxCtx) -> StepResult:
     if is_long:
         ui(f"Long PDF detected ({page_count} pages > {chunk_limit} limit), splitting...")
 
-    # Try local MinerU first unless cloud mode is requested, fallback to cloud API.
     mineru_mode = getattr(ctx.cfg.ingest, "mineru_mode", "hybrid")
-    if mineru_mode != "cloud" and check_server(ctx.cfg.ingest.mineru_endpoint):
-        if is_long:
-            result = _convert_long_pdf(pdf_path, mineru_opts, chunk_size=chunk_limit)
-        else:
-            result = convert_pdf(pdf_path, mineru_opts)
-    else:
-        api_keys = ctx.cfg.resolved_mineru_api_keys()
-        if not api_keys:
-            _log.error("MinerU unreachable and no cloud API key")
-            ctx.status = "failed"
-            return StepResult.FAIL
-        from autor.ingest.mineru import convert_pdf_cloud
+    local_available = mineru_mode != "cloud" and check_server(ctx.cfg.ingest.mineru_endpoint)
+    use_local, api_keys = _mineru_sources(ctx.cfg, local_available=local_available)
+    if not use_local and not api_keys:
+        _log.error("MinerU unreachable and no cloud API key")
+        ctx.status = "failed"
+        return StepResult.FAIL
 
-        _log.debug("local MinerU unreachable, using cloud API")
-        if is_long:
+    if is_long:
+        if use_local and not api_keys:
+            result = _convert_long_pdf(pdf_path, mineru_opts, chunk_size=chunk_limit)
+        elif not use_local and len(api_keys) == 1:
             result = _convert_long_pdf_cloud(
                 pdf_path,
                 mineru_opts,
@@ -251,12 +273,47 @@ def step_mineru(ctx: InboxCtx) -> StepResult:
                 chunk_size=chunk_limit,
             )
         else:
+            result = _convert_long_pdf_mixed(
+                pdf_path,
+                mineru_opts,
+                use_local=use_local,
+                api_keys=api_keys,
+                cloud_url=ctx.cfg.ingest.mineru_cloud_url,
+                chunk_size=chunk_limit,
+                batch_size=ctx.cfg.ingest.mineru_cloud_batch_size,
+                max_files_per_token_per_min=ctx.cfg.ingest.mineru_cloud_max_files_per_token_per_min,
+                max_result_queries_per_token_per_min=ctx.cfg.ingest.mineru_cloud_max_result_queries_per_token_per_min,
+                poll_interval_seconds=ctx.cfg.ingest.mineru_cloud_poll_interval_seconds,
+                backoff_on_429_seconds=ctx.cfg.ingest.mineru_cloud_backoff_on_429_seconds,
+                backoff_max_seconds=ctx.cfg.ingest.mineru_cloud_backoff_max_seconds,
+            )
+    else:
+        if use_local and not api_keys:
+            result = convert_pdf(pdf_path, mineru_opts)
+        elif not use_local and len(api_keys) == 1:
+            from autor.ingest.mineru import convert_pdf_cloud
+
             result = convert_pdf_cloud(
                 pdf_path,
                 mineru_opts,
                 api_key=api_keys[0],
                 cloud_url=ctx.cfg.ingest.mineru_cloud_url,
             )
+        else:
+            results = convert_pdfs_mixed_batch(
+                [pdf_path],
+                mineru_opts,
+                use_local=use_local,
+                api_keys=api_keys,
+                cloud_url=ctx.cfg.ingest.mineru_cloud_url,
+                batch_size=ctx.cfg.ingest.mineru_cloud_batch_size,
+                max_files_per_token_per_min=ctx.cfg.ingest.mineru_cloud_max_files_per_token_per_min,
+                max_result_queries_per_token_per_min=ctx.cfg.ingest.mineru_cloud_max_result_queries_per_token_per_min,
+                poll_interval_seconds=ctx.cfg.ingest.mineru_cloud_poll_interval_seconds,
+                backoff_on_429_seconds=ctx.cfg.ingest.mineru_cloud_backoff_on_429_seconds,
+                backoff_max_seconds=ctx.cfg.ingest.mineru_cloud_backoff_max_seconds,
+            )
+            result = results[0]
 
     if not result.success:
         _log.error("MinerU failed: %s", result.error)
@@ -574,8 +631,11 @@ def step_ingest(ctx: InboxCtx) -> StepResult:
 
     if ctx.md_path and ctx.md_path.exists():
         new_md = paper_d / "paper.md"
+        from autor.ingest.mineru import strip_markdown_images
+
+        ctx.md_path.write_text(strip_markdown_images(ctx.md_path.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
         shutil.move(str(ctx.md_path), str(new_md))
-        # Move MinerU assets (images, layout.json, etc.) if present
+        # Move non-image MinerU assets; image directories are discarded.
         md_stem = ctx.md_path.stem if ctx.md_path else ""
         pdf_stem = ctx.pdf_path.stem if ctx.pdf_path else ""
         _move_assets(ctx.inbox_dir, paper_d, pdf_stem or md_stem, md_stem)
@@ -649,7 +709,7 @@ def step_toc(json_path: Path, cfg: Config, opts: dict) -> StepResult:
 
 
 def step_l3(json_path: Path, cfg: Config, opts: dict) -> StepResult:
-    """LLM 提取结论段写入 JSON（papers 作用域封装）。
+    """LLM 生成 L3 结论层写入 JSON（papers 作用域封装）。
 
     Args:
         json_path: 论文 JSON 路径（meta.json）。
@@ -686,75 +746,6 @@ def step_l3(json_path: Path, cfg: Config, opts: dict) -> StepResult:
 # ============================================================================
 
 
-def step_translate(json_path: Path, cfg: Config, opts: dict) -> StepResult:
-    """翻译论文 Markdown 到目标语言（papers 作用域）。
-
-    Args:
-        json_path: 论文 JSON 路径（meta.json）。
-        cfg: 全局配置。
-        opts: 运行选项。
-
-    Returns:
-        ``StepResult.OK`` 成功, ``StepResult.SKIP`` 跳过。
-    """
-    from autor.translate import translate_paper
-
-    paper_d = json_path.parent
-    md_path = paper_d / "paper.md"
-    if not md_path.exists():
-        _log.debug("skipping translate (no paper.md): %s", paper_d.name)
-        return StepResult.SKIP
-
-    if opts.get("dry_run"):
-        _log.debug("would translate: %s", paper_d.name)
-        return StepResult.OK
-
-    target_lang = opts.get("translate_lang") or cfg.translate.target_lang
-    try:
-        from autor.translate import validate_lang
-
-        target_lang = validate_lang(target_lang)
-    except ValueError as exc:
-        ui(f"  跳过翻译（语言无效: {exc}）")
-        return StepResult.SKIP
-    force = opts.get("force", False)
-    tr = translate_paper(paper_d, cfg, target_lang=target_lang, force=force)
-    if not tr.ok:
-        return StepResult.SKIP
-    ui(f"  已翻译: {tr.path.name}")  # type: ignore[union-attr]
-    return StepResult.OK
-
-
-def step_embed(papers_dir: Path, cfg: Config, opts: dict) -> StepResult:
-    """生成语义向量写入 index.db（global 作用域）。
-
-    Args:
-        papers_dir: 论文目录。
-        cfg: 全局配置。
-        opts: 运行选项。
-
-    Returns:
-        ``StepResult.OK``；缺少 embed 依赖时跳过并返回 ``StepResult.SKIP``。
-    """
-    try:
-        from autor.vectors import build_vectors
-    except ImportError:
-        ui("跳过 embed 步骤：缺少依赖，安装: pip install autor[embed]")
-        return StepResult.SKIP
-
-    db_path = cfg.index_db
-    rebuild = opts.get("rebuild", False)
-    paper_ids = opts.get("paper_ids")
-
-    if opts.get("dry_run"):
-        _log.debug("would %s vectors: %s -> %s", "rebuild" if rebuild else "update", papers_dir, db_path)
-        return StepResult.OK
-
-    count = build_vectors(papers_dir, db_path, rebuild=rebuild, cfg=cfg, paper_ids=paper_ids)
-    ui(f"Vector index done, {count} new.")
-    return StepResult.OK
-
-
 def step_index(papers_dir: Path, cfg: Config, opts: dict) -> StepResult:
     """更新 SQLite FTS5 索引（global 作用域）。
 
@@ -766,7 +757,7 @@ def step_index(papers_dir: Path, cfg: Config, opts: dict) -> StepResult:
     Returns:
         ``StepResult.OK``。
     """
-    from autor.index import build_index
+    from autor.index import build_index, build_index_atomic
 
     db_path = cfg.index_db
     rebuild = opts.get("rebuild", False)
@@ -777,7 +768,10 @@ def step_index(papers_dir: Path, cfg: Config, opts: dict) -> StepResult:
         return StepResult.OK
 
     ui(f"{'Rebuild' if rebuild else 'Update'} index: {papers_dir} -> {db_path}")
-    count = build_index(papers_dir, db_path, rebuild=rebuild, paper_ids=paper_ids)
+    if rebuild:
+        count = build_index_atomic(papers_dir, db_path, rebuild=True)
+    else:
+        count = build_index(papers_dir, db_path, rebuild=False, paper_ids=paper_ids)
     ui(f"Index done, {count} papers.")
     return StepResult.OK
 
@@ -806,15 +800,28 @@ def _run_global_steps_for_paper(
     opts: dict[str, Any],
 ) -> None:
     """Run global-scope steps in queue mode for one paper at a time."""
+    _run_global_steps_for_papers({paper_id}, papers_dir, global_steps, cfg, opts)
+
+
+def _run_global_steps_for_papers(
+    paper_ids: set[str],
+    papers_dir: Path,
+    global_steps: list[str],
+    cfg: Config,
+    opts: dict[str, Any],
+) -> None:
+    """Run global-scope steps once for a known set of changed papers."""
     if not global_steps:
         return
+    if not paper_ids:
+        return
     step_opts = dict(opts)
-    step_opts["paper_ids"] = {paper_id}
+    step_opts["paper_ids"] = set(paper_ids)
     step_opts["rebuild"] = False
     for step_name in global_steps:
         with timer(f"pipeline.global.{step_name}", "step") as t:
             STEPS[step_name].fn(papers_dir, cfg, step_opts)
-        _log.debug("%s[%s]: %.1fs", step_name, paper_id, t.elapsed)
+        _log.debug("%s[%d papers]: %.1fs", step_name, len(paper_ids), t.elapsed)
 
 
 def step_refetch(json_path: Path, cfg: Config, opts: dict) -> StepResult:
@@ -875,10 +882,8 @@ STEPS: dict[str, StepDef] = {
     "dedup": StepDef(fn=step_dedup, scope="inbox", desc="API 查询 + DOI 去重"),
     "ingest": StepDef(fn=step_ingest, scope="inbox", desc="写入 data/papers/"),
     "toc": StepDef(fn=step_toc, scope="papers", desc="LLM 提取 TOC 写入 JSON"),
-    "l3": StepDef(fn=step_l3, scope="papers", desc="LLM 提取结论写入 JSON"),
-    "translate": StepDef(fn=step_translate, scope="papers", desc="翻译论文 Markdown 到目标语言"),
+    "l3": StepDef(fn=step_l3, scope="papers", desc="LLM 生成 L3 结论层写入 JSON"),
     "refetch": StepDef(fn=step_refetch, scope="papers", desc="重新查询 API 补全引用量等字段"),
-    "embed": StepDef(fn=step_embed, scope="global", desc="生成语义向量写入 index.db"),
     "index": StepDef(fn=step_index, scope="global", desc="更新 SQLite FTS5 索引"),
 }
 
@@ -891,10 +896,10 @@ _DOC_INBOX_STEPS = ["office_convert", "mineru", "extract_doc", "ingest"]
 _OFFICE_EXTENSIONS = (".docx", ".xlsx", ".pptx")
 
 PRESETS: dict[str, list[str]] = {
-    "full": ["mineru", "extract", "dedup", "ingest", "toc", "l3", "embed", "index"],
-    "ingest": ["mineru", "extract", "dedup", "ingest", "embed", "index"],
-    "enrich": ["toc", "l3", "embed", "index"],
-    "reindex": ["embed", "index"],
+    "full": ["mineru", "extract", "dedup", "ingest", "toc", "l3", "index"],
+    "ingest": ["mineru", "extract", "dedup", "ingest", "l3", "index"],
+    "enrich": ["toc", "l3", "index"],
+    "reindex": ["index"],
 }
 
 
@@ -903,17 +908,18 @@ PRESETS: dict[str, list[str]] = {
 # ============================================================================
 
 
-def _preconvert_inbox_pdfs_cloud(
+def _preconvert_inbox_pdfs_mineru(
     *,
     cfg: Config,
     inbox_dir: Path,
     entries: dict[str, dict[str, Path | None]],
+    use_local: bool,
+    api_keys: list[str],
 ) -> None:
-    """Convert eligible inbox PDFs through per-token cloud workers before serial ingest."""
-    from autor.ingest.mineru import ConvertOptions, _get_pdf_page_count, convert_pdfs_cloud_batch
+    """Convert eligible inbox PDFs before serial ingest using enabled MinerU sources."""
+    from autor.ingest.mineru import ConvertOptions, _get_pdf_page_count, convert_pdfs_mixed_batch
 
-    api_keys = cfg.resolved_mineru_api_keys()
-    if not api_keys:
+    if not use_local and not api_keys:
         return
 
     chunk_limit = getattr(cfg.ingest, "chunk_page_limit", 100)
@@ -943,10 +949,12 @@ def _preconvert_inbox_pdfs_cloud(
         formula_enable=cfg.ingest.mineru_enable_formula,
         table_enable=cfg.ingest.mineru_enable_table,
     )
-    ui(f"云端 MinerU 批量转换 {len(pdf_paths)} 个 PDF（{len(api_keys)} 个 token worker）...")
-    results = convert_pdfs_cloud_batch(
+    source_count = (1 if use_local else 0) + len(api_keys)
+    ui(f"MinerU 并行转换 {len(pdf_paths)} 个 PDF（{source_count} 个 source: 本地={int(use_local)}, 云端 token={len(api_keys)}）...")
+    results = convert_pdfs_mixed_batch(
         pdf_paths,
         mineru_opts,
+        use_local=use_local,
         api_keys=api_keys,
         cloud_url=cfg.ingest.mineru_cloud_url,
         batch_size=cfg.ingest.mineru_cloud_batch_size,
@@ -958,10 +966,10 @@ def _preconvert_inbox_pdfs_cloud(
     )
     ok = sum(1 for result in results if result.success)
     failed = len(results) - ok
-    ui(f"云端 MinerU 批量转换完成: {ok} 成功 / {failed} 失败")
+    ui(f"MinerU 并行转换完成: {ok} 成功 / {failed} 失败")
     for result in results:
         if not result.success:
-            _log.warning("MinerU cloud batch failed for %s: %s", result.pdf_path.name, result.error)
+            _log.warning("MinerU batch failed for %s: %s", result.pdf_path.name, result.error)
 
 
 def _process_inbox(
@@ -1032,17 +1040,17 @@ def _process_inbox(
 
     needs_mineru = has_pdfs and "mineru" in inbox_steps
     local_mineru_available = False
+    mineru_use_local = False
+    mineru_api_keys: list[str] = []
     if needs_mineru and not dry_run:
         from autor.ingest.mineru import check_server
 
         mineru_mode = getattr(cfg.ingest, "mineru_mode", "hybrid")
         local_mineru_available = mineru_mode != "cloud" and check_server(cfg.ingest.mineru_endpoint)
-        if not local_mineru_available:
-            if cfg.resolved_mineru_api_keys():
-                _log.debug("local MinerU unavailable or cloud mode requested, will use cloud API")
-            else:
-                _log.error("MinerU unreachable (local: %s, no cloud API key)", cfg.ingest.mineru_endpoint)
-                sys.exit(1)
+        mineru_use_local, mineru_api_keys = _mineru_sources(cfg, local_available=local_mineru_available)
+        if not mineru_use_local and not mineru_api_keys:
+            _log.error("MinerU unreachable (local: %s, no cloud API key)", cfg.ingest.mineru_endpoint)
+            sys.exit(1)
 
     extra_info = []
     if md_only_count:
@@ -1059,8 +1067,18 @@ def _process_inbox(
     stats: dict[str, int] = {"ingested": 0, "duplicate": 0, "needs_review": 0, "failed": 0, "skipped": 0}
     step_times: dict[str, float] = {}
     sorted_entries = sorted(entries.items())
-    if needs_mineru and not dry_run and not local_mineru_available:
-        _preconvert_inbox_pdfs_cloud(cfg=cfg, inbox_dir=inbox_dir, entries=entries)
+    mineru_mode = getattr(cfg.ingest, "mineru_mode", "hybrid")
+    should_preconvert = needs_mineru and not dry_run and (
+        mineru_mode == "cloud" or bool(mineru_api_keys) or not local_mineru_available
+    )
+    if should_preconvert:
+        _preconvert_inbox_pdfs_mineru(
+            cfg=cfg,
+            inbox_dir=inbox_dir,
+            entries=entries,
+            use_local=mineru_use_local,
+            api_keys=mineru_api_keys,
+        )
 
     for idx, (stem, paths) in enumerate(sorted_entries):
         office_path = paths.get("office")
@@ -1115,7 +1133,6 @@ def _process_inbox(
             if paper_uuid:
                 successfully_ingested.append({"id": paper_uuid, "dir_name": ctx.ingested_json.parent.name})
                 _run_papers_steps_for_json(ctx.ingested_json, papers_steps, cfg, opts)
-                _run_global_steps_for_paper(paper_uuid, papers_dir, global_steps, cfg, opts)
 
         if api_delay and idx < len(sorted_entries) - 1:
             time.sleep(api_delay)
@@ -1125,7 +1142,7 @@ def _process_inbox(
         for stray in list(inbox_dir.glob(pattern)):
             stray.unlink(missing_ok=True)
             _log.debug("stray cleanup: %s", stray.name)
-    for stray_dir in list(inbox_dir.glob("*_mineru_images")):
+    for stray_dir in list(inbox_dir.glob("*_mineru_images")) + list(inbox_dir.glob("*_images")) + list(inbox_dir.glob("images")):
         if stray_dir.is_dir():
             shutil.rmtree(stray_dir)
             _log.debug("stray cleanup dir: %s", stray_dir.name)
@@ -1150,11 +1167,8 @@ def run_pipeline(
 
     按 scope 分三阶段依次执行:
       1. **inbox** — 逐个文件: mineru → extract → dedup → ingest
-      2. **papers** — 逐篇已入库论文: toc → l3 → translate（auto_translate 开启时自动注入）
-      3. **global** — 全局执行一次: embed → index
-
-    当 ``config.translate.auto_translate`` 为 ``True`` 且 pipeline 包含 inbox 步骤时，
-    会在 papers scope 阶段自动注入 translate 步骤（位于 embed/index 之前）。
+      2. **papers** — 逐篇已入库论文: toc → l3
+      3. **global** — 全局执行一次: index（节点级 FTS5 证据索引）
 
     Args:
         step_names: 步骤名称列表，如 ``["extract", "dedup", "ingest"]``。
@@ -1167,23 +1181,14 @@ def run_pipeline(
             - ``force`` (bool): 强制重新处理（toc/l3）。
             - ``inspect`` (bool): 展示处理详情。
             - ``max_retries`` (int): l3 最大重试次数。
-            - ``rebuild`` (bool): 重建索引（index/embed）。
+            - ``rebuild`` (bool): 重建索引（index）。
             - ``inbox_dir`` (Path): 自定义 inbox 目录。
             - ``papers_dir`` (Path): 自定义 papers 目录。
-        workspace: Optional workspace name that should receive newly ingested papers.
+        workspace: Optional workspace name. For inbox pipelines, newly
+            ingested papers are added to this workspace. For papers/global
+            pipelines without inbox steps, this scopes processing to existing
+            papers in that workspace.
     """
-    # Auto-inject translate step when config.translate.auto_translate is enabled.
-    # Only inject when the pipeline includes inbox steps (i.e. new papers are being ingested),
-    # to avoid triggering LLM translation on unrelated runs like reindex/embed.
-    has_inbox = any(n in STEPS and STEPS[n].scope == "inbox" for n in step_names)
-    if cfg.translate.auto_translate and has_inbox and "translate" not in step_names and "translate" in STEPS:
-        # Insert translate before global-scope steps (embed/index)
-        first_global = next(
-            (i for i, n in enumerate(step_names) if n in STEPS and STEPS[n].scope == "global"),
-            len(step_names),
-        )
-        step_names = [*step_names[:first_global], "translate", *step_names[first_global:]]
-
     # Validate steps
     for name in step_names:
         if name not in STEPS:
@@ -1207,6 +1212,16 @@ def run_pipeline(
     dry_run = opts.get("dry_run", False)
     ingested_jsons: list[Path] = []  # track newly ingested papers
     successfully_ingested: list[dict[str, str]] = []
+    workspace_paper_ids: set[str] | None = None
+    workspace_dir_names: set[str] | None = None
+    if workspace and not inbox_steps:
+        from autor import workspace as workspace_mod
+
+        ws_dir = cfg._root / "workspace" / workspace
+        workspace_paper_ids = workspace_mod.read_paper_ids(ws_dir)
+        workspace_dir_names = workspace_mod.read_dir_names(ws_dir, cfg.index_db)
+        if not workspace_paper_ids and not workspace_dir_names:
+            ui(f"工作区为空: {workspace}")
 
     # ---- Inbox scope ----
     if inbox_steps:
@@ -1296,6 +1311,10 @@ def run_pipeline(
                 existing_pub_nums=existing_pub_nums,
             )
 
+    if inbox_steps and global_steps and successfully_ingested:
+        changed_ids = {entry["id"] for entry in successfully_ingested if entry.get("id")}
+        _run_global_steps_for_papers(changed_ids, papers_dir, global_steps, cfg, opts)
+
     # ---- Papers scope ----
     if papers_steps:
         if inbox_steps:
@@ -1305,7 +1324,11 @@ def run_pipeline(
             # No inbox steps (e.g. `pipeline enrich`) — process all
             from autor.papers import iter_paper_dirs
 
-            json_paths = sorted(d / "meta.json" for d in iter_paper_dirs(papers_dir))
+            paper_dirs = list(iter_paper_dirs(papers_dir))
+            if workspace_dir_names is not None:
+                paper_dirs = [d for d in paper_dirs if d.name in workspace_dir_names]
+                ui(f"工作区范围: {workspace}（{len(paper_dirs)} 篇）")
+            json_paths = sorted(d / "meta.json" for d in paper_dirs)
         if not json_paths:
             if not inbox_steps:
                 ui(f"No papers in: {papers_dir}")
@@ -1314,18 +1337,11 @@ def run_pipeline(
             step_times: dict[str, float] = {}
 
             # Concurrent execution for papers_steps when LLM-bound steps
-            # (toc, l3, translate) are present. All papers_steps run per-paper
+            # (toc, l3) are present. All papers_steps run per-paper
             # inside _process_one_paper(); different papers execute in parallel.
-            llm_steps = {"toc", "l3", "translate"}
+            llm_steps = {"toc", "l3"}
             has_llm_steps = bool(set(papers_steps) & llm_steps)
-            if has_llm_steps and "translate" in papers_steps:
-                # When translate coexists with other LLM steps (toc/l3), use the
-                # lower of the two limits to avoid exceeding backend rate limits.
-                workers = min(cfg.translate.concurrency, cfg.llm.concurrency)
-            elif has_llm_steps:
-                workers = cfg.llm.concurrency
-            else:
-                workers = 1
+            workers = cfg.llm.concurrency if has_llm_steps else 1
 
             def _process_one_paper(json_path: Path) -> tuple[str, dict[str, float]]:
                 """Process all papers_steps for one paper. Returns (status, timings)."""
@@ -1396,6 +1412,10 @@ def run_pipeline(
 
     # ---- Global scope ----
     if not inbox_steps:
+        if workspace_paper_ids is not None:
+            opts = dict(opts)
+            opts["paper_ids"] = workspace_paper_ids
+            opts["rebuild"] = False
         for step_name in global_steps:
             with timer(f"pipeline.global.{step_name}", "step") as t:
                 STEPS[step_name].fn(papers_dir, cfg, opts)
@@ -1430,7 +1450,7 @@ def import_external(
 ) -> dict[str, int]:
     """从外部来源（Endnote 等）批量导入论文。
 
-    对每条记录按队列顺序运行 dedup + ingest，并在成功入库后立刻更新该样本的 embed + index。
+    对每条记录按队列顺序运行 dedup + ingest，并在成功入库后立刻更新该样本的 FTS5 index。
     如提供 ``pdf_paths``（与 records 索引对齐），入库时自动复制
     PDF 到论文目录。
 
@@ -1503,7 +1523,7 @@ def import_external(
                 ui(f"  PDF: {pdf_src.name}")
             paper_uuid = str(getattr(ctx.meta, "id", "") or "")
             if paper_uuid and not dry_run:
-                _run_global_steps_for_paper(paper_uuid, papers_dir, ["embed", "index"], cfg, {"dry_run": False})
+                _run_global_steps_for_paper(paper_uuid, papers_dir, ["index"], cfg, {"dry_run": False})
 
         if has_api and idx < len(records) - 1:
             time.sleep(1.0)
@@ -1528,9 +1548,9 @@ def batch_convert_pdfs(
     """按队列逐篇转换已入库论文的 PDF 为 paper.md，可选 enrich。
 
     扫描 ``data/papers/`` 中有 PDF 无 ``paper.md`` 的论文，
-    无论本地还是云端都逐篇调用 MinerU，确保单样本独立参数、独立落盘，
-    避免批处理阶段长时间持有共享文件状态。每篇成功转换后立即执行
-    abstract backfill、可选 enrich，以及该样本的 embed + index。
+    在可用 source（本地 MinerU + 云端 token）之间并行分发转换任务，同时
+    确保单样本独立参数、独立落盘。转换完成后按顺序执行 abstract backfill、
+    可选 enrich，以及该样本的节点级 FTS5 index，避免并发写索引。
 
     Args:
         cfg: 全局配置。
@@ -1555,21 +1575,24 @@ def batch_convert_pdfs(
         ui("没有需要转换的 PDF")
         return stats
 
-    from autor.ingest.mineru import ConvertOptions, check_server
+    import concurrent.futures
+    import threading
+    from queue import Empty, Queue
 
-    use_local = check_server(cfg.ingest.mineru_endpoint)
-    api_keys: list[str] = []
-    if not use_local:
-        api_keys = cfg.resolved_mineru_api_keys()
-        if not api_keys:
-            ui("错误：MinerU 不可达且无云 API key，无法批量转换")
-            return stats
+    from autor.ingest.mineru import ConvertOptions, check_server, convert_pdf, convert_pdf_cloud
 
-    ui(f"\n开始批量转换 {len(to_convert)} 个 PDF...")
+    mineru_mode = getattr(cfg.ingest, "mineru_mode", "hybrid")
+    local_available = mineru_mode != "cloud" and check_server(cfg.ingest.mineru_endpoint)
+    use_local, api_keys = _mineru_sources(cfg, local_available=local_available)
+    if not use_local and not api_keys:
+        ui("错误：MinerU 不可达且无云 API key，无法批量转换")
+        return stats
 
-    for idx, (pdir, pdf_path) in enumerate(to_convert):
-        ui(f"[{idx + 1}/{len(to_convert)}] {pdir.name}")
-        mineru_opts = ConvertOptions(
+    source_count = (1 if use_local else 0) + len(api_keys)
+    ui(f"\n开始并行转换 {len(to_convert)} 个 PDF（{source_count} 个 source: 本地={int(use_local)}, 云端 token={len(api_keys)}）...")
+
+    def _make_convert_options(pdir: Path) -> ConvertOptions:
+        return ConvertOptions(
             api_url=cfg.ingest.mineru_endpoint,
             output_dir=pdir,
             backend=cfg.ingest.mineru_backend_local,
@@ -1579,19 +1602,52 @@ def batch_convert_pdfs(
             formula_enable=cfg.ingest.mineru_enable_formula,
             table_enable=cfg.ingest.mineru_enable_table,
         )
+
+    work_q: Queue[tuple[int, Path, Path]] = Queue()
+    for idx, (pdir, pdf_path) in enumerate(to_convert):
+        work_q.put((idx, pdir, pdf_path))
+
+    converted_results: list[tuple[Path, Path, Any] | None] = [None] * len(to_convert)
+    result_lock = threading.Lock()
+
+    def _mark_result(index: int, pdir: Path, pdf_path: Path, result: Any) -> None:
+        with result_lock:
+            converted_results[index] = (pdir, pdf_path, result)
+
+    def _worker(source_name: str, api_key: str | None = None) -> None:
+        while True:
+            try:
+                idx, pdir, pdf_path = work_q.get_nowait()
+            except Empty:
+                return
+
+            ui(f"[{idx + 1}/{len(to_convert)}] {pdir.name} ({source_name})")
+            mineru_opts = _make_convert_options(pdir)
+            if api_key is None:
+                result = convert_pdf(pdf_path, mineru_opts)
+            else:
+                result = convert_pdf_cloud(
+                    pdf_path,
+                    mineru_opts,
+                    api_key=api_key,
+                    cloud_url=cfg.ingest.mineru_cloud_url,
+                )
+            _mark_result(idx, pdir, pdf_path, result)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=source_count, thread_name_prefix="mineru-convert") as pool:
+        futures = []
         if use_local:
-            from autor.ingest.mineru import convert_pdf
+            futures.append(pool.submit(_worker, "local"))
+        futures.extend(pool.submit(_worker, f"token-{idx + 1}", api_key) for idx, api_key in enumerate(api_keys))
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
 
-            result = convert_pdf(pdf_path, mineru_opts)
-        else:
-            from autor.ingest.mineru import convert_pdf_cloud
-
-            result = convert_pdf_cloud(
-                pdf_path,
-                mineru_opts,
-                api_key=api_keys[0],
-                cloud_url=cfg.ingest.mineru_cloud_url,
-            )
+    for idx, item in enumerate(converted_results):
+        if item is None:
+            ui(f"  转换失败: {to_convert[idx][1].name} 未完成")
+            stats["failed"] += 1
+            continue
+        pdir, pdf_path, result = item
         if not result.success:
             ui(f"  转换失败: {result.error}")
             stats["failed"] += 1
@@ -1615,17 +1671,18 @@ def _postprocess_convert(pdir: Path, pdf_path: Path, result) -> None:
         if paper_md.exists():
             paper_md.unlink()
         shutil.move(str(result.md_path), str(paper_md))
+    if paper_md.exists():
+        from autor.ingest.mineru import strip_markdown_images
+
+        paper_md.write_text(strip_markdown_images(paper_md.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
 
     # Clean up MinerU artifacts
     for pattern in ["*_layout.json", "*_content_list.json", "*_origin.pdf"]:
         for f in pdir.glob(pattern):
             f.unlink(missing_ok=True)
-    for img_dir in pdir.glob("*_images"):
-        if img_dir.name != "images" and img_dir.is_dir():
-            target = pdir / "images"
-            if target.exists():
-                shutil.rmtree(target)
-            img_dir.rename(target)
+    for img_dir in list(pdir.glob("*_images")) + list(pdir.glob("*_mineru_images")) + [pdir / "images"]:
+        if img_dir.is_dir():
+            shutil.rmtree(img_dir)
 
     # Clean up source PDF
     if pdf_path.exists() and pdf_path.name != "paper.pdf":
@@ -1669,12 +1726,12 @@ def _postprocess_converted_paper(
     try:
         meta = read_meta(pdir)
     except (ValueError, FileNotFoundError) as e:
-        _log.debug("failed to reload meta for vector/index update %s: %s", pdir.name, e)
+        _log.debug("failed to reload meta for index update %s: %s", pdir.name, e)
         return
     paper_id = str(meta.get("id") or "")
     if not paper_id:
         return
-    _run_global_steps_for_paper(paper_id, cfg.papers_dir, ["embed", "index"], cfg, {"dry_run": False})
+    _run_global_steps_for_paper(paper_id, cfg.papers_dir, ["index"], cfg, {"dry_run": False})
 
 
 def _normalize_pmid(value: str | None) -> str:
@@ -1953,7 +2010,9 @@ def _find_assets(inbox_dir: Path, asset_prefix: str, md_stem: str) -> tuple[Path
     images_dir = None
     for candidate in [
         inbox_dir / f"{asset_prefix}_mineru_images",
+        inbox_dir / f"{asset_prefix}_images",
         inbox_dir / f"{md_stem}_mineru_images",
+        inbox_dir / f"{md_stem}_images",
         inbox_dir / "images",
     ]:
         if candidate.is_dir():
@@ -1970,10 +2029,10 @@ def _find_assets(inbox_dir: Path, asset_prefix: str, md_stem: str) -> tuple[Path
 
 
 def _move_assets(inbox_dir: Path, dest_dir: Path, asset_prefix: str, md_stem: str) -> None:
-    """Move MinerU assets (images, layout.json, etc.) from inbox to dest."""
+    """Move non-image MinerU assets from inbox to dest and discard images."""
     images_dir, json_files, origin_pdfs = _find_assets(inbox_dir, asset_prefix, md_stem)
     if images_dir:
-        shutil.move(str(images_dir), str(dest_dir / "images"))
+        shutil.rmtree(images_dir, ignore_errors=True)
     for f in json_files:
         prefix = asset_prefix if f.name.startswith(asset_prefix) else md_stem
         dest_name = f.name.replace(f"{prefix}_", "", 1)
@@ -2024,13 +2083,16 @@ def _move_to_pending(
 
     # Move .md
     if ctx.md_path and ctx.md_path.exists():
+        from autor.ingest.mineru import strip_markdown_images
+
+        ctx.md_path.write_text(strip_markdown_images(ctx.md_path.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
         shutil.move(str(ctx.md_path), str(paper_d / "paper.md"))
 
     # Move .pdf if present
     if ctx.pdf_path and ctx.pdf_path.exists():
         shutil.move(str(ctx.pdf_path), str(paper_d / ctx.pdf_path.name))
 
-    # Move MinerU assets (images, layout.json, etc.)
+    # Move non-image MinerU assets and discard image directories.
     _move_assets(ctx.inbox_dir, paper_d, pdf_stem or md_stem, md_stem)
 
     # Write marker JSON with extracted metadata + issue description

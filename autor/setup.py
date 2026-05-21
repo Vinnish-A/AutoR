@@ -29,8 +29,6 @@ _S: dict[str, dict[Lang, str]] = {
     # -- check labels --
     "python_ver": {"en": "Python version", "zh": "Python 版本"},
     "core_deps": {"en": "Core deps", "zh": "核心依赖"},
-    "embed_deps": {"en": "Embed deps", "zh": "嵌入依赖"},
-    "topics_deps": {"en": "Topics deps", "zh": "主题依赖"},
     "import_deps": {"en": "Import deps", "zh": "导入依赖"},
     "config_yaml": {"en": "config.yaml", "zh": "config.yaml"},
     "llm_key": {"en": "LLM API key", "zh": "LLM API key"},
@@ -130,8 +128,6 @@ def t(key: str, lang: Lang) -> str:
 # (import_name, pip_name)
 _DEP_GROUPS: dict[str, list[tuple[str, str]]] = {
     "core": [("requests", "requests"), ("yaml", "pyyaml")],
-    "embed": [("sentence_transformers", "sentence-transformers"), ("faiss", "faiss-cpu"), ("numpy", "numpy")],
-    "topics": [("bertopic", "bertopic"), ("pandas", "pandas")],
     "import": [("endnote_utils", "endnote-utils"), ("pyzotero", "pyzotero")],
 }
 
@@ -149,7 +145,7 @@ def check_dep_group(group: str) -> DepGroupStatus:
     """Check if all packages in a dependency group are importable.
 
     Args:
-        group: Dependency group name (core/embed/topics/import).
+        group: Dependency group name (core/import).
 
     Returns:
         DepGroupStatus with installed flag and list of missing pip package names.
@@ -207,8 +203,6 @@ def run_check(cfg: Config | None = None, lang: Lang = "zh") -> list[CheckResult]
     # Dependency groups
     for group, label_key in [
         ("core", "core_deps"),
-        ("embed", "embed_deps"),
-        ("topics", "topics_deps"),
         ("import", "import_deps"),
     ]:
         status = check_dep_group(group)
@@ -371,7 +365,7 @@ def run_wizard(cfg: Config | None = None) -> None:
 
 def _wizard_deps(lang: Lang) -> None:
     """Check and optionally install missing dependency groups."""
-    for group in ("core", "embed", "topics", "import"):
+    for group in ("core", "import"):
         status = check_dep_group(group)
         label_key = f"{group}_deps"
         if status.installed:
@@ -480,11 +474,10 @@ llm:
 # Ingestion pipeline
 ingest:
   extractor: robust         # auto | regex | llm | robust
-  mineru_mode: hybrid       # local | cloud | hybrid
+  mineru_mode: hybrid       # local | cloud | hybrid; hybrid runs local + all cloud tokens in parallel
   mineru_endpoint: http://localhost:8000
   mineru_cloud_url: https://mineru.net/api/v4
   mineru_api_keys: []       # sensitive tokens go in config.local.yaml or MINERU_API_KEYS
-  mineru_api_key: null      # legacy single key; keep null in config.yaml
   mineru_backend_local: pipeline      # pipeline | vlm-auto-engine | vlm-http-client | hybrid-auto-engine | hybrid-http-client
   mineru_model_version_cloud: pipeline # pipeline | vlm | MinerU-HTML
   mineru_lang: ch
@@ -501,15 +494,6 @@ ingest:
   mineru_cloud_backoff_on_429_seconds: 60
   mineru_cloud_backoff_max_seconds: 600
 
-# Semantic embeddings (gte-Qwen2-1.5B-instruct, auto-downloaded)
-embed:
-  model: Alibaba-NLP/gte-Qwen2-1.5B-instruct
-  cache_dir: ~/.cache/modelscope/hub/models
-  device: auto              # auto | cpu | cuda
-  top_k: 10
-  source: huggingface       # huggingface | modelscope
-  hf_endpoint: null         # optional HuggingFace mirror endpoint
-
 search:
   top_k: 20
 
@@ -520,8 +504,4 @@ logging:
   backup_count: 3
   metrics_db: data/metrics.db
 
-topics:
-  min_topic_size: 5
-  nr_topics: -1             # 0=auto, -1=no merging, positive=target count
-  model_dir: data/topic_model
 """

@@ -11,7 +11,36 @@ function Test-Health {
     }
 }
 
-function Wait-ForHealth {
+function Test-Port {
+    param([int]$Port)
+
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $iar = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
+        $ok = $iar.AsyncWaitHandle.WaitOne(1000, $false)
+        if (-not $ok) { return $false }
+        $client.EndConnect($iar)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
+}
+
+function Test-Ready {
+    param([int]$Port)
+
+    if (Test-Health -Port $Port) {
+        return $true
+    }
+    if ($env:AUTOR_AUTODOWNLOAD_HEALTH_STRICT -eq "1") {
+        return $false
+    }
+    return Test-Port -Port $Port
+}
+
+function Wait-ForReady {
     param(
         [int]$Port,
         [int]$Retries = 30,
@@ -19,7 +48,7 @@ function Wait-ForHealth {
     )
 
     for ($i = 0; $i -lt $Retries; $i++) {
-        if (Test-Health -Port $Port) {
+        if (Test-Ready -Port $Port) {
             return $true
         }
         Start-Sleep -Seconds $DelaySeconds
@@ -42,7 +71,7 @@ if (-not (Test-Path $autoDownloadDir)) {
     throw "Records repository not found: $autoDownloadDir"
 }
 
-if (Test-Health -Port $port) {
+if (Test-Ready -Port $port) {
     Write-Host "Records service is already running: http://127.0.0.1:$port"
     exit 0
 }
@@ -53,10 +82,13 @@ if ($service) {
         Start-Service -Name "AutoDownload"
     }
 
-    if (-not (Wait-ForHealth -Port $port)) {
-        throw "The AutoDownload Windows service started, but the Records health check failed."
+    if (-not (Wait-ForReady -Port $port)) {
+        throw "The AutoDownload Windows service started, but the Records service did not become reachable."
     }
 
+    if (-not (Test-Health -Port $port)) {
+        Write-Warning "Records service is listening, but /health did not respond. Startup continues; set AUTOR_AUTODOWNLOAD_HEALTH_STRICT=1 to require /health."
+    }
     Write-Host "Records Windows service started."
     exit 0
 }
@@ -88,11 +120,14 @@ $process = Start-Process @startProcessParams
 
 Set-Content -Path $pidFile -Value $process.Id -Encoding ascii
 
-if (-not (Wait-ForHealth -Port $port)) {
+if (-not (Wait-ForReady -Port $port)) {
     if (-not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
     }
-    throw "The Records service failed to start because the health check did not pass."
+    throw "The Records service failed to start because the port did not become reachable."
 }
 
+if (-not (Test-Health -Port $port)) {
+    Write-Warning "Records service is listening, but /health did not respond. Startup continues; set AUTOR_AUTODOWNLOAD_HEALTH_STRICT=1 to require /health."
+}
 Write-Host "Records service started (PID $($process.Id))."

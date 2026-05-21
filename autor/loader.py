@@ -1,10 +1,10 @@
 """
-loader.py — 分层内容加载 + TOC 提取 + L3 结论提取
+loader.py — 分层内容加载 + TOC 提取 + L3 结论层提取
 ====================================================
 
 L1: title / authors / year / journal / doi  ← JSON 字段
 L2: abstract                                ← JSON 字段
-L3: conclusion                              ← JSON 字段（需先运行 enrich_l3 提取）
+L3: paper-level takeaway                    ← JSON 字段（需先运行 enrich_l3 提取）
 L4: full markdown                           ← 读 .md 文件
 
 TOC 提取（enrich_toc）
@@ -16,9 +16,12 @@ TOC 提取（enrich_toc）
 
 L3 提取（enrich_l3）
 ---------------------
+L3 是论文级结论层，而不只是原文 Conclusion section。
 若 JSON 已有 TOC，直接从中定位结论节（跳过第一次 LLM 调用）。
 否则走 Primary path：LLM 从原始标题列表选出结论节 → Python 截取 → LLM 校验。
 Fallback path：LLM 直接给出起止行号 → Python 截取 → LLM 校验。
+若没有明确结论节，走 synthesis path：从摘要、结果、讨论、图表标题等候选源生成
+受证据约束的 L3 结论卡片。
 """
 
 from __future__ import annotations
@@ -36,9 +39,9 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-# Paper types for which L3 conclusion extraction is skipped.
+# Paper types for which L3 generation is skipped.
 # These long-form or non-article documents don't have a standard
-# conclusion section suitable for the current extraction strategy.
+# article structure suitable for the current L3 strategy.
 L3_SKIP_TYPES = frozenset(
     {
         "thesis",
@@ -70,6 +73,7 @@ class L3AttemptResult:
     method: str | None = None
     start_line: int | None = None
     end_line: int | None = None
+    record: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,19 @@ _FALLBACK_WINDOW_LINES = 320
 _FALLBACK_WINDOW_OVERLAP = 100
 _FALLBACK_SCAN_FRACTION = 0.40
 _FALLBACK_MAX_WINDOWS = 6
+_L3_SCHEMA_VERSION = "autor.l3.v2"
+_L3_SOURCE_CHAR_BUDGET = 18000
+_L3_SECTION_CHAR_LIMIT = 6000
+_NUMERIC_SIGNAL_RE = re.compile(
+    r"(?i)(?:\b\d+(?:\.\d+)?\s*(?:%|percent|fold|x|×|mg|µg|μg|ng|kg|ml|mL|"
+    r"days?|weeks?|months?|years?|hours?|h|nM|µM|μM|mm|cm|cells?|patients?|mice|samples?)\b|"
+    r"\bn\s*=\s*\d+|p\s*[<=>]\s*0?\.\d+|95\s*%\s*CI|HR\s*[=:]\s*\d|ORR|PFS|OS|CRS)"
+)
+_LIMITATION_RE = re.compile(
+    r"(?i)\b(limitation|limited|however|although|caution|future|unclear|small sample|"
+    r"retrospective|prospective|not yet|further|warranted)\b|"
+    r"(局限|不足|然而|未来|尚不|不能|仍需|有待|样本量)"
+)
 
 
 # ============================================================================
@@ -228,50 +245,41 @@ def load_l2(json_path: Path) -> str:
 
 
 def load_l3(json_path: Path) -> str | None:
-    """加载 L3 层结论文本。
+    """加载 L3 层结论卡片的可读文本。
 
-    需先运行 :func:`enrich_l3` 提取结论段到 JSON。
+    需先运行 :func:`enrich_l3` 提取或综合 L3 到 JSON。
 
     Args:
         json_path: 论文 JSON 元数据文件路径。
 
     Returns:
-        结论文本，尚未提取时返回 ``None``。
+        L3 可读文本，尚未提取时返回 ``None``。
     """
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    return data.get("l3_conclusion") or None
+    record = data.get("l3")
+    if isinstance(record, dict):
+        return _render_l3_record(record)
+    return None
 
 
-def load_l4(md_path: Path, *, lang: str | None = None) -> str:
-    """加载 L4 层全文 Markdown，可选加载翻译版本。
+def load_l3_record(json_path: Path) -> dict | None:
+    """加载结构化 L3 记录。"""
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    record = data.get("l3")
+    if isinstance(record, dict):
+        return record
+    return None
 
-    当指定 ``lang`` 时，优先加载 ``paper_{lang}.md``（如 ``paper_zh.md``），
-    不存在则回退到原文 ``paper.md``。
+
+def load_l4(md_path: Path) -> str:
+    """加载 L4 层全文 Markdown。
 
     Args:
         md_path: MinerU 输出的 ``.md`` 文件路径。
-        lang: 目标语言代码（如 ``"zh"``），为 ``None`` 时加载原文。
 
     Returns:
         完整 Markdown 文本。
     """
-    if lang:
-        # Normalize + validate lang to prevent path traversal
-        try:
-            from autor.translate import validate_lang
-        except ImportError:
-            _log.warning("failed to import validate_lang, falling back to original", exc_info=True)
-            lang = None
-        else:
-            try:
-                lang = validate_lang(lang)
-            except ValueError:
-                _log.warning("invalid lang code %r, falling back to original", lang)
-                lang = None
-            else:
-                translated = md_path.parent / f"paper_{lang}.md"
-                if translated.exists():
-                    return translated.read_text(encoding="utf-8", errors="replace")
     return md_path.read_text(encoding="utf-8", errors="replace")
 
 
@@ -282,11 +290,11 @@ def load_l4(md_path: Path, *, lang: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class MarkdownChunk:
-    """A section-aware markdown chunk used for retrieval embeddings.
+    """A section-aware markdown chunk used for node-level retrieval.
 
     Attributes:
         section: The logical section label for the chunk.
-        content: Prefixed chunk text that will be embedded and stored.
+        content: Prefixed chunk text stored in the evidence index.
     """
 
     section: str
@@ -539,6 +547,7 @@ def _ok(
     reason: str = "",
     start_line: int | None = None,
     end_line: int | None = None,
+    record: dict[str, Any] | None = None,
 ) -> L3AttemptResult:
     return L3AttemptResult(
         success=True,
@@ -549,6 +558,7 @@ def _ok(
         method=method,
         start_line=start_line,
         end_line=end_line,
+        record=record,
     )
 
 
@@ -594,15 +604,232 @@ def _select_l3_failure(attempts: list[L3AttemptResult], *, header_count: int) ->
     if not attempts:
         return _fail("extract", "bad_structure", "未执行任何 L3 提取路径")
 
-    if header_count <= 1 and all(a.status in {"no_conclusion", "bad_structure"} for a in attempts):
+    if header_count <= 1 and all(a.status in {"no_conclusion", "bad_structure", "no_sources"} for a in attempts):
         return _fail("primary", "bad_structure", f"正文结构不足：仅检测到 {header_count} 个候选节标题")
 
-    for status in ("validation_reject", "llm_error", "too_short", "bad_structure", "no_conclusion"):
+    for status in ("validation_reject", "llm_error", "too_short", "bad_structure", "no_sources", "no_conclusion"):
         for attempt in reversed(attempts):
             if attempt.status == status:
                 return attempt
 
     return attempts[-1]
+
+
+def _build_l3_record(
+    *,
+    mode: str,
+    confidence: str,
+    takeaway: str,
+    method: str,
+    source_spans: list[dict[str, Any]] | None = None,
+    key_findings: list[dict[str, Any]] | None = None,
+    quantitative_signals: list[dict[str, Any]] | None = None,
+    limitations: list[str] | None = None,
+    warnings: list[str] | None = None,
+    source_excerpt: str | None = None,
+) -> dict[str, Any]:
+    """Build the canonical L3 v2 record."""
+    safe_confidence = confidence if confidence in {"high", "medium", "low", "unknown"} else "medium"
+    return {
+        "schema_version": _L3_SCHEMA_VERSION,
+        "mode": mode,
+        "confidence": safe_confidence,
+        "method": method,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "takeaway": takeaway.strip(),
+        "key_findings": key_findings or [],
+        "quantitative_signals": quantitative_signals or [],
+        "limitations": limitations or [],
+        "warnings": warnings or [],
+        "source_spans": source_spans or [],
+        "source_excerpt": source_excerpt or "",
+    }
+
+
+def _record_from_explicit_result(result: L3AttemptResult) -> dict[str, Any]:
+    text = (result.conclusion or "").strip()
+    source = {
+        "source": "conclusion",
+        "method": result.method or result.stage,
+        "start_line": result.start_line,
+        "end_line": result.end_line,
+    }
+    confidence = "high" if result.stage == "toc" else "medium"
+    return _build_l3_record(
+        mode="explicit_section",
+        confidence=confidence,
+        takeaway=text,
+        method=result.method or result.stage,
+        source_spans=[source],
+        quantitative_signals=_extract_quantitative_signals(text, source="conclusion"),
+        limitations=_extract_limitations(text),
+        warnings=[] if result.stage in {"toc", "primary"} else ["conclusion_found_by_fallback_window"],
+        source_excerpt=text,
+    )
+
+
+def _augment_explicit_l3_record(record: dict[str, Any], data: dict[str, Any], lines: list[str]) -> dict[str, Any]:
+    """Supplement explicit conclusions with dense signals from nearby paper-level sources."""
+    existing_quant = record.get("quantitative_signals")
+    if not isinstance(existing_quant, list):
+        existing_quant = []
+    existing_limitations = record.get("limitations")
+    if not isinstance(existing_limitations, list):
+        existing_limitations = []
+
+    sources = _collect_l3_synthesis_sources(data, lines)
+    added_quant: list[dict[str, Any]] = []
+    added_limits: list[str] = []
+    seen_quant = {str(item.get("text") if isinstance(item, dict) else item).casefold() for item in existing_quant}
+    seen_limits = {str(item).casefold() for item in existing_limitations}
+
+    for source in sources:
+        for item in _extract_quantitative_signals(source["text"], source=source["source"], limit=4):
+            key = item["text"].casefold()
+            if key in seen_quant:
+                continue
+            seen_quant.add(key)
+            added_quant.append(item)
+            if len(existing_quant) + len(added_quant) >= 10:
+                break
+        for item in _extract_limitations(source["text"], limit=3):
+            key = item.casefold()
+            if key in seen_limits:
+                continue
+            seen_limits.add(key)
+            added_limits.append(item)
+            if len(existing_limitations) + len(added_limits) >= 6:
+                break
+        if len(existing_quant) + len(added_quant) >= 10 and len(existing_limitations) + len(added_limits) >= 6:
+            break
+
+    if not added_quant and not added_limits:
+        return record
+
+    augmented = dict(record)
+    augmented["mode"] = "hybrid"
+    augmented["quantitative_signals"] = (existing_quant + added_quant)[:10]
+    augmented["limitations"] = (existing_limitations + added_limits)[:6]
+    warnings = list(augmented.get("warnings") if isinstance(augmented.get("warnings"), list) else [])
+    warnings.append("explicit_conclusion_supplemented_with_result_bearing_sources")
+    augmented["warnings"] = list(dict.fromkeys(str(w) for w in warnings if str(w).strip()))
+
+    source_spans = list(augmented.get("source_spans") if isinstance(augmented.get("source_spans"), list) else [])
+    for source in sources:
+        if source.get("start_line") is None:
+            continue
+        source_spans.append(
+            {
+                "source": source["source"],
+                "start_line": source.get("start_line"),
+                "end_line": source.get("end_line"),
+            }
+        )
+    augmented["source_spans"] = source_spans[:12]
+    return augmented
+
+
+def _render_l3_record(record: dict[str, Any]) -> str | None:
+    """Render a structured L3 record as human-readable text."""
+    takeaway = record.get("takeaway")
+    if not isinstance(takeaway, str) or not takeaway.strip():
+        return None
+
+    findings = record.get("key_findings") if isinstance(record.get("key_findings"), list) else []
+    quantitative = record.get("quantitative_signals") if isinstance(record.get("quantitative_signals"), list) else []
+    limitations = record.get("limitations") if isinstance(record.get("limitations"), list) else []
+    warnings = record.get("warnings") if isinstance(record.get("warnings"), list) else []
+
+    # Keep old explicit-section displays uncluttered when no richer fields exist.
+    if record.get("mode") == "explicit_section" and not findings and not quantitative and not limitations and not warnings:
+        return takeaway.strip()
+
+    parts = [f"Mode: {record.get('mode', 'unknown')} | Confidence: {record.get('confidence', 'unknown')}", ""]
+    parts.extend(["Takeaway:", takeaway.strip()])
+
+    if findings:
+        parts.extend(["", "Key findings:"])
+        for item in findings:
+            if isinstance(item, dict):
+                claim = str(item.get("claim") or item.get("text") or "").strip()
+                basis = str(item.get("evidence_basis") or item.get("source") or "").strip()
+                if claim:
+                    suffix = f" ({basis})" if basis else ""
+                    parts.append(f"- {claim}{suffix}")
+            elif str(item).strip():
+                parts.append(f"- {str(item).strip()}")
+
+    if quantitative:
+        parts.extend(["", "Quantitative signals:"])
+        for item in quantitative:
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("value") or item.get("metric") or "").strip()
+                source = str(item.get("source") or "").strip()
+                if text:
+                    suffix = f" [{source}]" if source else ""
+                    parts.append(f"- {text}{suffix}")
+            elif str(item).strip():
+                parts.append(f"- {str(item).strip()}")
+
+    if limitations:
+        parts.extend(["", "Limitations / boundaries:"])
+        for item in limitations:
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("limitation") or "").strip()
+            else:
+                text = str(item).strip()
+            if text:
+                parts.append(f"- {text}")
+
+    if warnings:
+        parts.extend(["", "Warnings:"])
+        for item in warnings:
+            text = str(item).strip()
+            if text:
+                parts.append(f"- {text}")
+
+    return "\n".join(parts).strip()
+
+
+def _split_sentences(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text.strip())
+    if not normalized:
+        return []
+    return [s.strip() for s in re.split(r"(?<=[.!?。！？])\s+", normalized) if s.strip()]
+
+
+def _extract_quantitative_signals(text: str, *, source: str, limit: int = 8) -> list[dict[str, str]]:
+    signals: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for sentence in _split_sentences(text):
+        if not _NUMERIC_SIGNAL_RE.search(sentence):
+            continue
+        compact = sentence[:500].strip()
+        key = compact.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        signals.append({"text": compact, "source": source})
+        if len(signals) >= limit:
+            break
+    return signals
+
+
+def _extract_limitations(text: str, *, limit: int = 5) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for sentence in _split_sentences(text):
+        if not _LIMITATION_RE.search(sentence):
+            continue
+        compact = sentence[:500].strip()
+        key = compact.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(compact)
+        if len(items) >= limit:
+            break
+    return items
 
 
 # ============================================================================
@@ -710,7 +937,7 @@ def enrich_toc(
 
 
 # ============================================================================
-#  L3 extraction entry point
+#  L3 generation entry point
 # ============================================================================
 
 
@@ -723,7 +950,7 @@ def enrich_l3(
     max_retries: int = 2,
     inspect: bool = False,
 ) -> bool:
-    """用 LLM 提取结论段，写入 ``JSON["l3_conclusion"]``。
+    """用 LLM 生成论文级 L3 结论卡片，写入 ``JSON["l3"]``。
 
     提取策略（按优先级）:
       1. 从已有 TOC 定位结论节 → Python 截取 → LLM 校验清洗
@@ -752,7 +979,13 @@ def enrich_l3(
         if data.get("l3_extraction_method") == "skipped":
             return True  # already marked, idempotent
         _log.debug("skipping L3 for paper_type=%s: %s", paper_type, paper_d.name)
-        data.pop("l3_conclusion", None)  # clear stale conclusion if any
+        data["l3"] = _build_l3_record(
+            mode="skipped",
+            confidence="unknown",
+            takeaway="",
+            method="skipped",
+            warnings=[f"paper_type={paper_type}"],
+        )
         data["l3_extraction_method"] = "skipped"
         data["l3_extracted_at"] = datetime.now().isoformat(timespec="seconds")
         _write_l3_attempt_metadata(
@@ -768,7 +1001,7 @@ def enrich_l3(
         write_meta(paper_d, data)
         return True
 
-    if data.get("l3_conclusion") and not force:
+    if data.get("l3") and not force:
         _log.debug("existing L3 (method: %s), skipping", data.get("l3_extraction_method", "?"))
         return True
 
@@ -820,15 +1053,25 @@ def enrich_l3(
         if fallback_result.success:
             conclusion_result = fallback_result
 
+    # --- Synthesis path for papers without explicit conclusion sections ---
+    if conclusion_result is None:
+        _log.debug("[Synthesis] explicit conclusion paths failed, attempting paper-level L3 synthesis")
+        synthesis_result = _synthesis_path(data, lines, config, inspect)
+        attempts.append(synthesis_result)
+        if synthesis_result.success:
+            conclusion_result = synthesis_result
+
     if conclusion_result is None:
         failure = _select_l3_failure(attempts, header_count=len(headers))
         _write_l3_attempt_metadata(data, failure)
         write_meta(paper_d, data)
-        _log.error("all paths failed to extract conclusion (%s/%s): %s", failure.stage, failure.status, failure.reason)
+        _log.error("all paths failed to generate L3 (%s/%s): %s", failure.stage, failure.status, failure.reason)
         return False
 
-    # Write back
-    data["l3_conclusion"] = conclusion_result.conclusion
+    record = conclusion_result.record or _record_from_explicit_result(conclusion_result)
+    if record.get("mode") == "explicit_section":
+        record = _augment_explicit_l3_record(record, data, lines)
+    data["l3"] = record
     data["l3_extraction_method"] = conclusion_result.method
     data["l3_extracted_at"] = datetime.now().isoformat(timespec="seconds")
     _write_l3_attempt_metadata(data, conclusion_result)
@@ -1577,6 +1820,256 @@ def _fallback_path(
 
 
 # ============================================================================
+#  Synthesis path for papers without an explicit conclusion section
+# ============================================================================
+
+
+def _synthesis_path(
+    data: dict[str, Any],
+    lines: list[str],
+    config: Config,
+    inspect: bool,
+) -> L3AttemptResult:
+    sources = _collect_l3_synthesis_sources(data, lines)
+    if not sources:
+        return _fail(
+            "synthesis",
+            "no_sources",
+            "未找到可用于综合 L3 的摘要、结果、讨论或图表标题候选源",
+            method="synthesis",
+        )
+
+    source_text = _render_l3_sources(sources)
+    prompt = (
+        "You are building L3 for an academic-paper knowledge base.\n"
+        "L3 is a paper-level takeaway card, not merely a copied conclusion section.\n"
+        "The paper appears to lack a clear standalone conclusion section, or the explicit conclusion extraction failed.\n"
+        "Use ONLY the supplied source snippets. Do not add facts from general knowledge.\n\n"
+        "Tasks:\n"
+        "1. Write a concise paper-level takeaway.\n"
+        "2. Extract 2-6 key findings that are directly supported by the snippets.\n"
+        "3. Extract quantitative signals when present: sample size, effect size, rate, P value, CI, dose, time, endpoint, model, or measurement.\n"
+        "4. Extract limitations or boundary conditions when present.\n"
+        "5. Set confidence to high only when abstract/results/discussion support the same takeaway; otherwise medium or low.\n\n"
+        "Return JSON only with this schema:\n"
+        "{"
+        '"takeaway": "<paper-level conclusion>", '
+        '"key_findings": [{"claim": "...", "evidence_basis": "<source label>"}], '
+        '"quantitative_signals": [{"text": "...", "source": "<source label>"}], '
+        '"limitations": ["..."], '
+        '"confidence": "high|medium|low", '
+        '"warnings": ["..."]'
+        "}\n\n"
+        f"{source_text}"
+    )
+
+    try:
+        timeout = getattr(getattr(config, "llm", None), "timeout_clean", None)
+        parsed = _parse_json(_call_llm(prompt, config, timeout=timeout))
+    except Exception as e:
+        return _fail("synthesis", "llm_error", f"综合 L3 失败：{e}", method="synthesis")
+
+    takeaway = str(parsed.get("takeaway") or "").strip()
+    if len(takeaway) < 50:
+        return _fail("synthesis", "validation_reject", "综合 L3 未返回足够具体的 takeaway", method="synthesis")
+
+    key_findings = _normalize_l3_dict_list(parsed.get("key_findings"), default_key="claim", limit=6)
+    quantitative = _normalize_l3_dict_list(parsed.get("quantitative_signals"), default_key="text", limit=10)
+    if not quantitative:
+        for source in sources:
+            quantitative.extend(_extract_quantitative_signals(source["text"], source=source["source"], limit=4))
+            if len(quantitative) >= 10:
+                quantitative = quantitative[:10]
+                break
+    limitations = _normalize_l3_string_list(parsed.get("limitations"), limit=6)
+    if not limitations:
+        for source in sources:
+            limitations.extend(_extract_limitations(source["text"], limit=3))
+            if len(limitations) >= 6:
+                limitations = limitations[:6]
+                break
+    warnings = _normalize_l3_string_list(parsed.get("warnings"), limit=8)
+    warnings.extend(["no_explicit_conclusion_section", "inferred_from_non_conclusion_sources"])
+    warnings = list(dict.fromkeys(warnings))
+
+    record = _build_l3_record(
+        mode="inferred_synthesis",
+        confidence=str(parsed.get("confidence") or "medium").strip().lower(),
+        takeaway=takeaway,
+        method="synthesis",
+        source_spans=[
+            {
+                "source": s["source"],
+                "start_line": s.get("start_line"),
+                "end_line": s.get("end_line"),
+            }
+            for s in sources
+        ],
+        key_findings=key_findings,
+        quantitative_signals=quantitative,
+        limitations=limitations,
+        warnings=warnings,
+        source_excerpt=source_text[:4000],
+    )
+    rendered = _render_l3_record(record) or takeaway
+    _log.debug("[Synthesis] L3 generated from %d sources, %d chars", len(sources), len(rendered))
+    return _ok("synthesis", "synthesis", rendered, reason="综合生成 L3", record=record)
+
+
+def _collect_l3_synthesis_sources(data: dict[str, Any], lines: list[str]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    abstract = data.get("abstract")
+    if isinstance(abstract, str) and abstract.strip() and abstract.strip() != "[No abstract available]":
+        sources.append({"source": "abstract", "start_line": None, "end_line": None, "text": abstract.strip()})
+
+    headers = _extract_headers(lines)
+    for idx, header in enumerate(headers):
+        label = _l3_source_label(header.get("text", ""))
+        if not label:
+            continue
+        start_line = int(header["line"])
+        end_line = len(lines)
+        for next_header in headers[idx + 1 :]:
+            if _is_real_section(next_header["text"]):
+                end_line = int(next_header["line"]) - 1
+                break
+        text = _slice_lines(lines, start_line, end_line)
+        text = _compact_l3_source_text(text)
+        if text:
+            sources.append({"source": label, "start_line": start_line, "end_line": end_line, "text": text})
+
+    sources.extend(_collect_caption_sources(lines))
+    return _dedupe_l3_sources(sources)
+
+
+def _l3_source_label(title: str) -> str | None:
+    cleaned = _clean_heading_text(_strip_section_prefix(title)).casefold()
+    zh = re.sub(r"\s+", "", cleaned)
+    if cleaned in {"abstract", "summary", "highlights", "key points", "significance statement"} or zh in {
+        "摘要",
+        "要点",
+        "亮点",
+        "意义声明",
+    }:
+        return "abstract_or_highlights"
+    if cleaned in {"results", "results and discussion"} or zh.startswith("结果"):
+        return "results"
+    if cleaned in {"discussion", "general discussion"} or zh.startswith("讨论"):
+        return "discussion"
+    return None
+
+
+def _compact_l3_source_text(text: str) -> str:
+    stripped = text.strip()
+    if len(stripped) <= _L3_SECTION_CHAR_LIMIT:
+        return stripped
+    head = stripped[: int(_L3_SECTION_CHAR_LIMIT * 0.45)].rstrip()
+    tail = stripped[-int(_L3_SECTION_CHAR_LIMIT * 0.45) :].lstrip()
+    return f"{head}\n\n[...middle omitted for L3 synthesis...]\n\n{tail}"
+
+
+def _collect_caption_sources(lines: list[str]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    caption_start = re.compile(r"^\s*(?:#+\s*)?(?:fig(?:ure)?\.?\s*\d+|table\s*\d+|图\s*\d+|表\s*\d+)", re.IGNORECASE)
+    for idx, line in enumerate(lines, start=1):
+        if not caption_start.match(line):
+            continue
+        chunk = [line.strip()]
+        for extra in range(idx, min(len(lines), idx + 4)):
+            nxt = lines[extra].strip()
+            if not nxt:
+                break
+            if re.match(r"^#{1,6}\s+", nxt):
+                break
+            chunk.append(nxt)
+        text = " ".join(chunk)
+        if _NUMERIC_SIGNAL_RE.search(text) or len(text) >= 80:
+            sources.append({"source": "figure_or_table_caption", "start_line": idx, "end_line": idx + len(chunk) - 1, "text": text})
+    return sources[:8]
+
+
+def _dedupe_l3_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    used_chars = 0
+    for source in sources:
+        text = str(source.get("text") or "").strip()
+        if len(text) < 40:
+            continue
+        key = (str(source.get("source") or ""), text[:200].casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        remaining = _L3_SOURCE_CHAR_BUDGET - used_chars
+        if remaining <= 0:
+            break
+        if len(text) > remaining:
+            text = text[:remaining].rstrip()
+        item = dict(source)
+        item["text"] = text
+        deduped.append(item)
+        used_chars += len(text)
+    return deduped
+
+
+def _render_l3_sources(sources: list[dict[str, Any]]) -> str:
+    blocks = []
+    for idx, source in enumerate(sources, start=1):
+        line_info = ""
+        if source.get("start_line") is not None:
+            line_info = f" lines {source.get('start_line')}-{source.get('end_line')}"
+        blocks.append(f"[SOURCE {idx}: {source['source']}{line_info}]\n{source['text']}")
+    return "\n\n".join(blocks)
+
+
+def _normalize_l3_string_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, dict):
+            text = str(item.get("text") or item.get("claim") or item.get("limitation") or "").strip()
+        else:
+            text = str(item).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text[:600])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _normalize_l3_dict_list(value: Any, *, default_key: str, limit: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, dict):
+            normalized = {str(k): v for k, v in item.items() if isinstance(k, str)}
+            text = str(normalized.get(default_key) or normalized.get("text") or normalized.get("claim") or "").strip()
+        else:
+            text = str(item).strip()
+            normalized = {default_key: text}
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized[default_key] = text[:600]
+        out.append(normalized)
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ============================================================================
 #  LLM validation + cleaning
 # ============================================================================
 
@@ -1602,6 +2095,9 @@ def _validate_and_clean(text: str, config: Config) -> L3ValidationResult:
         "CRediT authorship statements, Declaration of interests/competing interest, "
         "Data availability, Author ORCIDs, Author contributions, conflict of interest, etc.\n"
         "   - Keep only the actual conclusion/summary paragraphs. Do NOT truncate mid-sentence.\n"
+        "   - Preserve information density: retain concrete findings, mechanisms, quantitative results, "
+        "limitations, and future directions that are present in the source.\n"
+        "   - Do not aggressively summarize, paraphrase, or generalize; clean the extracted text rather than rewriting it.\n"
         "3. If it contains NO conclusion content at all, set conclusion to null.\n\n"
         f"{text}\n\n"
         'Return JSON only: {"conclusion": "<cleaned text or null>", "reason": "<one sentence>"}'

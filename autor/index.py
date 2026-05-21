@@ -1,15 +1,16 @@
 """
-index.py — SQLite FTS5 全文检索索引
-=====================================
+index.py — SQLite FTS5 可审计证据索引
+=======================================
 
-索引字段：title + abstract + conclusion（均可检索）
-其余字段（paper_id, authors, year, journal, doi, paper_type, citation_count, md_path）
-存储但不参与检索。
+索引包括论文级 metadata/registry 表、引用图表，以及从 ``meta.json`` 和
+``paper.md`` 生成的 ``paper_nodes`` / ``paper_node_fts`` 节点级证据索引。
+检索结果保留 evidence snippet 和 ref_path，供 answer-time provenance 使用。
 
 用法：
     from autor.index import build_index, search
     build_index(papers_dir, db_path)
     results = search("turbulent boundary layer", db_path)
+    bundle = research_bundle("What evidence supports ...?", db_path)
 """
 
 from __future__ import annotations
@@ -17,8 +18,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import sqlite3
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -100,6 +105,37 @@ _CITATIONS_IDX_TARGET_ID = (
     "CREATE INDEX IF NOT EXISTS idx_cit_target_id ON citations(target_id) WHERE target_id IS NOT NULL;"
 )
 
+_NODE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS paper_nodes (
+    node_id      TEXT PRIMARY KEY,
+    paper_id     TEXT NOT NULL,
+    dir_name     TEXT NOT NULL,
+    ordinal      INTEGER NOT NULL,
+    kind         TEXT NOT NULL,
+    section      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    ref_path     TEXT NOT NULL,
+    prev_id      TEXT,
+    next_id      TEXT,
+    content      TEXT NOT NULL,
+    tokens       TEXT NOT NULL,
+    content_hash TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_nodes_paper_id ON paper_nodes(paper_id);
+CREATE INDEX IF NOT EXISTS idx_paper_nodes_prev_id ON paper_nodes(prev_id);
+CREATE INDEX IF NOT EXISTS idx_paper_nodes_next_id ON paper_nodes(next_id);
+"""
+
+_NODE_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS paper_node_fts USING fts5(
+    node_id  UNINDEXED,
+    paper_id UNINDEXED,
+    tokens,
+    tokenize = 'unicode61'
+);
+"""
+
 
 def _index_hash(meta: dict) -> str:
     """Compute a short hash of the fields indexed in FTS5."""
@@ -109,7 +145,7 @@ def _index_hash(meta: dict) -> str:
         str(meta.get("year") or ""),
         meta.get("journal") or "",
         meta.get("abstract") or "",
-        meta.get("l3_conclusion") or "",
+        json.dumps(meta.get("l3") or {}, sort_keys=True, ensure_ascii=False),
         meta.get("doi") or "",
         meta.get("pmid") or ((meta.get("ids") or {}).get("pmid", "") or ""),
         meta.get("paper_type") or "",
@@ -124,7 +160,118 @@ def _index_hash(meta: dict) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
 
 
-_best_citation = best_citation  # backward compat alias
+def _render_l3_index_text(meta: dict) -> str:
+    """Return compact text from the structured L3 record for indexing."""
+    l3 = meta.get("l3")
+    if not isinstance(l3, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("takeaway", "confidence", "mode"):
+        value = l3.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    for key in ("key_findings", "quantitative_signals", "limitations"):
+        value = l3.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+            elif isinstance(item, dict):
+                text = " ".join(str(v).strip() for v in item.values() if str(v).strip())
+            else:
+                text = str(item).strip()
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _text_hash(text: str) -> str:
+    """Compute a short hash for node-level evidence text."""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _is_cjk(char: str) -> bool:
+    code = ord(char)
+    return (
+        0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+        or 0x3040 <= code <= 0x30FF
+        or 0xAC00 <= code <= 0xD7AF
+    )
+
+
+def _fts_tokens(text: str) -> list[str]:
+    """Tokenize text into ASCII words plus CJK 2-grams for deterministic FTS."""
+    tokens: list[str] = []
+    seen: set[str] = set()
+    cjk_run: list[str] = []
+
+    def add(token: str) -> None:
+        token = token.strip().lower()
+        if not token or token in seen:
+            return
+        seen.add(token)
+        tokens.append(token)
+
+    def flush_cjk() -> None:
+        nonlocal cjk_run
+        if not cjk_run:
+            return
+        if len(cjk_run) == 1:
+            add(cjk_run[0])
+        else:
+            for i in range(len(cjk_run) - 1):
+                add("".join(cjk_run[i : i + 2]))
+        cjk_run = []
+
+    for part in re.finditer(r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_]", str(text or "")):
+        raw = part.group(0)
+        if len(raw) == 1 and _is_cjk(raw):
+            cjk_run.append(raw)
+            continue
+        flush_cjk()
+        if re.match(r"^[A-Za-z0-9_]+$", raw):
+            add(raw)
+    flush_cjk()
+    return tokens
+
+
+def _quote_fts_token(token: str) -> str:
+    return '"' + token.replace('"', '""') + '"'
+
+
+def _build_node_match(query: str, *, query_mode: str = "or", require_terms: list[str] | None = None) -> str:
+    """Build a safe FTS5 expression over pre-tokenized node text."""
+    tokens = _fts_tokens(query)
+    if not tokens:
+        return ""
+    joiner = " AND " if str(query_mode or "or").lower() == "and" else " OR "
+    expr = joiner.join(_quote_fts_token(t) for t in tokens[:64])
+    required: list[str] = []
+    for term in require_terms or []:
+        required.extend(_fts_tokens(term))
+    required_expr = " AND ".join(_quote_fts_token(t) for t in required[:32])
+    if required_expr:
+        return f"{required_expr} AND ({expr})"
+    return expr
+
+
+def _extract_snippet(text: str, terms: list[str], *, max_chars: int = 360) -> str:
+    """Return a deterministic evidence window around the first query-term hit."""
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(clean) <= max_chars:
+        return clean
+    low = clean.lower()
+    positions = [low.find(t.lower()) for t in terms if t and low.find(t.lower()) >= 0]
+    center = min(positions) if positions else 0
+    start = max(0, center - max_chars // 3)
+    end = min(len(clean), start + max_chars)
+    start = max(0, end - max_chars)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(clean) else ""
+    return prefix + clean[start:end].strip() + suffix
 
 
 def _normalize_doi(value: str | None) -> str:
@@ -182,14 +329,6 @@ def _normalize_exact_title(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
-def _ensure_registry_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
-    """Add a missing column to ``papers_registry`` for backward compatibility."""
-    try:
-        conn.execute(f"SELECT {column} FROM papers_registry LIMIT 0")
-    except sqlite3.OperationalError:
-        conn.execute(f"ALTER TABLE papers_registry ADD COLUMN {column} {column_type}")
-
-
 def _create_partial_index_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -213,11 +352,8 @@ def _create_partial_index_with_fallback(
             pass
 
 
-def _ensure_registry_runtime_compat(conn: sqlite3.Connection) -> None:
-    """Ensure registry columns and exact-match indexes exist on legacy databases."""
-    conn.execute(_REGISTRY_SCHEMA)
-    _ensure_registry_column(conn, "pmid", "TEXT")
-    _ensure_registry_column(conn, "publication_number", "TEXT")
+def _ensure_registry_indexes(conn: sqlite3.Connection) -> None:
+    """Ensure exact-match indexes exist on the current registry schema."""
     try:
         conn.execute(_REGISTRY_DOI_INDEX)
     except sqlite3.OperationalError:
@@ -368,7 +504,10 @@ def build_index(
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(_SCHEMA)
         conn.execute(_HASH_SCHEMA)
-        _ensure_registry_runtime_compat(conn)
+        conn.executescript(_NODE_SCHEMA)
+        conn.execute(_NODE_FTS_SCHEMA)
+        conn.execute(_REGISTRY_SCHEMA)
+        _ensure_registry_indexes(conn)
         conn.execute(_CITATIONS_SCHEMA)
         try:
             conn.execute(_CITATIONS_IDX_TARGET_DOI)
@@ -381,7 +520,11 @@ def build_index(
 
         if rebuild:
             conn.execute("DROP TABLE IF EXISTS papers")
+            conn.execute("DROP TABLE IF EXISTS paper_node_fts")
+            conn.execute("DROP TABLE IF EXISTS paper_nodes")
             conn.execute(_SCHEMA)
+            conn.executescript(_NODE_SCHEMA)
+            conn.execute(_NODE_FTS_SCHEMA)
             conn.execute("DELETE FROM papers_hash")
             conn.execute("DELETE FROM papers_registry")
             conn.execute("DELETE FROM citations")
@@ -403,13 +546,14 @@ def build_index(
             if target_ids is not None and paper_id not in target_ids:
                 continue
             h = _index_hash(meta)
-            if not rebuild and existing_hashes.get(paper_id) == h:
+            has_nodes = conn.execute("SELECT 1 FROM paper_nodes WHERE paper_id = ? LIMIT 1", (paper_id,)).fetchone()
+            if not rebuild and existing_hashes.get(paper_id) == h and has_nodes:
                 continue  # unchanged, skip
 
             if not rebuild:
                 conn.execute("DELETE FROM papers WHERE paper_id = ?", (paper_id,))
 
-            best_cite = _best_citation(meta)
+            best_cite = best_citation(meta)
             md_file = pdir / "paper.md"
             conn.execute(
                 """
@@ -425,7 +569,7 @@ def build_index(
                     str(meta.get("year") or ""),
                     meta.get("journal") or "",
                     meta.get("abstract") or "",
-                    meta.get("l3_conclusion") or "",
+                    _render_l3_index_text(meta),
                     meta.get("doi") or "",
                     meta.get("paper_type") or "",
                     str(best_cite) if best_cite is not None else "",
@@ -458,12 +602,14 @@ def build_index(
 
             # Insert references into citations table
             refs = _reference_dois(meta.get("references") or [])
+            conn.execute("DELETE FROM citations WHERE source_id = ?", (paper_id,))
             if refs:
-                conn.execute("DELETE FROM citations WHERE source_id = ?", (paper_id,))
                 conn.executemany(
                     "INSERT OR IGNORE INTO citations (source_id, target_doi, target_id) VALUES (?, ?, NULL)",
                     [(paper_id, doi) for doi in refs],
                 )
+
+            _replace_paper_nodes(conn, paper_id=paper_id, dir_name=dir_name, meta=meta, paper_dir=pdir)
 
             count += 1
 
@@ -479,6 +625,203 @@ def build_index(
     finally:
         conn.close()
     return count
+
+
+def _checkpoint_wal(db_path: Path) -> None:
+    """Checkpoint and truncate SQLite WAL files after a build."""
+    if not db_path.exists():
+        return
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def build_index_atomic(
+    papers_dir: Path,
+    db_path: Path,
+    rebuild: bool = False,
+    *,
+    paper_ids: set[str] | None = None,
+    temp_dir: Path | None = None,
+) -> int:
+    """Build the index, using a temporary database for full rebuilds.
+
+    Full rebuilds can be very slow on Windows-mounted WSL paths because SQLite
+    writes large WAL files. For ``rebuild=True`` this helper builds the database
+    in a local temporary directory, checkpoints it, then replaces the target DB.
+
+    Args:
+        papers_dir: Papers directory.
+        db_path: Final SQLite database path.
+        rebuild: Whether to rebuild from scratch.
+        paper_ids: Optional UUID scope for incremental updates.
+        temp_dir: Optional temporary directory for rebuild output.
+
+    Returns:
+        Number of indexed papers.
+    """
+    if not rebuild:
+        return build_index(papers_dir, db_path, rebuild=False, paper_ids=paper_ids)
+
+    tmp_root = Path(temp_dir) if temp_dir else Path(tempfile.gettempdir())
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp_db = tmp_root / f"autor-index-{os.getpid()}.db"
+    for suffix in ("", "-wal", "-shm"):
+        tmp_db.with_name(tmp_db.name + suffix).unlink(missing_ok=True)
+
+    count = build_index(papers_dir, tmp_db, rebuild=True)
+    _checkpoint_wal(tmp_db)
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("-wal", "-shm"):
+        try:
+            db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+        except OSError as e:
+            _log.debug("failed to remove stale SQLite sidecar %s: %s", db_path.name + suffix, e)
+    shutil.copy2(tmp_db, db_path)
+    for suffix in ("-wal", "-shm"):
+        try:
+            db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+        except OSError as e:
+            _log.debug("failed to remove SQLite sidecar after atomic copy %s: %s", db_path.name + suffix, e)
+    for suffix in ("", "-wal", "-shm"):
+        tmp_db.with_name(tmp_db.name + suffix).unlink(missing_ok=True)
+    return count
+
+
+def index_status(db_path: Path) -> dict:
+    """Return a compact health summary for the local SQLite index."""
+    payload: dict = {
+        "path": str(db_path),
+        "exists": db_path.exists(),
+        "size_bytes": db_path.stat().st_size if db_path.exists() else 0,
+        "wal_size_bytes": db_path.with_name(db_path.name + "-wal").stat().st_size
+        if db_path.with_name(db_path.name + "-wal").exists()
+        else 0,
+        "shm_size_bytes": db_path.with_name(db_path.name + "-shm").stat().st_size
+        if db_path.with_name(db_path.name + "-shm").exists()
+        else 0,
+        "tables": {},
+        "ok": False,
+    }
+    if not db_path.exists():
+        return payload
+
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            names = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+                ).fetchall()
+            }
+            for table in ("papers_registry", "papers", "paper_nodes", "paper_node_fts", "citations"):
+                if table not in names:
+                    payload["tables"][table] = None
+                    continue
+                if table == "paper_node_fts":
+                    payload["tables"][table] = "present"
+                    continue
+                payload["tables"][table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            payload["ok"] = all(payload["tables"].get(t) is not None for t in ("papers_registry", "paper_nodes", "paper_node_fts"))
+    except sqlite3.Error as e:
+        payload["error"] = str(e)
+    return payload
+
+
+def _replace_paper_nodes(conn: sqlite3.Connection, *, paper_id: str, dir_name: str, meta: dict, paper_dir: Path) -> None:
+    """Replace deterministic evidence nodes for one paper."""
+    conn.execute("DELETE FROM paper_node_fts WHERE paper_id = ?", (paper_id,))
+    conn.execute("DELETE FROM paper_nodes WHERE paper_id = ?", (paper_id,))
+
+    title = str(meta.get("title") or "").strip()
+    abstract = str(meta.get("abstract") or "").strip()
+    conclusion = _render_l3_index_text(meta)
+    authors = ", ".join(meta.get("authors") or [])
+    journal = str(meta.get("journal") or "").strip()
+    year = str(meta.get("year") or "").strip()
+    doi = str(meta.get("doi") or "").strip()
+    paper_type = str(meta.get("paper_type") or "").strip()
+
+    nodes: list[tuple[str, str, str, str]] = []
+    metadata_parts = [
+        f"Title: {title}" if title else "",
+        f"Authors: {authors}" if authors else "",
+        f"Year: {year}" if year else "",
+        f"Journal: {journal}" if journal else "",
+        f"DOI: {doi}" if doi else "",
+        f"Type: {paper_type}" if paper_type else "",
+        f"Abstract: {abstract}" if abstract else "",
+        f"Conclusion: {conclusion}" if conclusion else "",
+    ]
+    metadata_text = "\n".join(part for part in metadata_parts if part).strip()
+    if metadata_text:
+        nodes.append(("metadata", "Metadata", metadata_text, str(paper_dir / "meta.json")))
+
+    md_path = paper_dir / "paper.md"
+    if md_path.exists():
+        try:
+            from autor.loader import chunk_markdown_text
+
+            markdown = md_path.read_text(encoding="utf-8", errors="replace")
+            chunks = chunk_markdown_text(markdown, title=title, max_chars=1200, overlap_chars=120)
+            for chunk in chunks:
+                ref = f"{md_path}#{_slugify_section(chunk.section)}" if chunk.section else str(md_path)
+                nodes.append(("chunk", chunk.section or "Full text", chunk.content, ref))
+        except Exception as exc:
+            _log.warning("failed to build evidence chunks for %s: %s", paper_dir.name, exc)
+
+    if not nodes and title:
+        nodes.append(("metadata", "Metadata", title, str(paper_dir / "meta.json")))
+
+    node_rows: list[tuple] = []
+    fts_rows: list[tuple[str, str, str]] = []
+    total = len(nodes)
+    for idx, (kind, section, content, ref_path) in enumerate(nodes, start=1):
+        node_id = f"{paper_id}:node:{idx:04d}"
+        prev_id = f"{paper_id}:node:{idx - 1:04d}" if idx > 1 else None
+        next_id = f"{paper_id}:node:{idx + 1:04d}" if idx < total else None
+        node_title = title or section or dir_name
+        token_text = " ".join(_fts_tokens(f"{node_title}\n{section}\n{content}"))
+        if not token_text:
+            token_text = node_title.lower() or paper_id.lower()
+        node_rows.append(
+            (
+                node_id,
+                paper_id,
+                dir_name,
+                idx,
+                kind,
+                section,
+                node_title,
+                ref_path,
+                prev_id,
+                next_id,
+                content,
+                token_text,
+                _text_hash(content),
+            )
+        )
+        fts_rows.append((node_id, paper_id, token_text))
+
+    conn.executemany(
+        """
+        INSERT INTO paper_nodes
+            (node_id, paper_id, dir_name, ordinal, kind, section, title, ref_path,
+             prev_id, next_id, content, tokens, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        node_rows,
+    )
+    conn.executemany(
+        "INSERT INTO paper_node_fts(node_id, paper_id, tokens) VALUES (?, ?, ?)",
+        fts_rows,
+    )
+
+
+def _slugify_section(value: str) -> str:
+    slug = re.sub(r"[^\w\u3400-\u9fff]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "section"
 
 
 _SEARCH_COLS = "paper_id, title, authors, year, journal, doi, paper_type, citation_count"
@@ -521,6 +864,241 @@ def _ensure_fts_table(conn: sqlite3.Connection) -> None:
         raise FileNotFoundError("FTS5 索引表不存在，请先运行 `autor index`")
 
 
+def _ensure_node_fts_table(conn: sqlite3.Connection) -> None:
+    """Raise FileNotFoundError if the node-level evidence index is missing."""
+    has_nodes = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='paper_nodes'").fetchone()
+    has_fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='paper_node_fts'").fetchone()
+    if not has_nodes or not has_fts:
+        raise FileNotFoundError("节点证据索引不存在，请先运行 `autor index --rebuild`")
+
+
+def _paper_ids_clause(alias: str, paper_ids: set[str] | None) -> tuple[str, list[str]]:
+    if paper_ids is None:
+        return "", []
+    if not paper_ids:
+        return " AND 0", []
+    ids = sorted(paper_ids)
+    return f" AND {alias}.paper_id IN ({','.join('?' for _ in ids)})", ids
+
+
+def search_nodes(
+    query: str,
+    db_path: Path,
+    top_k: int | None = None,
+    cfg: Config | None = None,
+    *,
+    year: str | None = None,
+    journal: str | None = None,
+    paper_type: str | None = None,
+    paper_ids: set[str] | None = None,
+    query_mode: str = "or",
+    require_terms: list[str] | None = None,
+    exclude_terms: list[str] | None = None,
+) -> list[dict]:
+    """Search deterministic full-text evidence nodes.
+
+    Args:
+        query: Natural-language query or keywords.
+        db_path: SQLite index path.
+        top_k: Maximum node hits to return.
+        cfg: Optional config.
+        year: Optional year filter.
+        journal: Optional journal filter.
+        paper_type: Optional paper type filter.
+        paper_ids: Optional UUID whitelist.
+        query_mode: ``"or"`` for broad recall or ``"and"`` for stricter matching.
+        require_terms: Terms that must also appear in the FTS expression.
+        exclude_terms: Terms that must not appear in returned node content.
+
+    Returns:
+        Evidence-node dictionaries with paper metadata, section, snippet, and source path.
+
+    Raises:
+        FileNotFoundError: Database or node index missing.
+    """
+    if top_k is None:
+        top_k = cfg.search.top_k if cfg is not None else 20
+    if top_k <= 0:
+        return []
+    if paper_ids is not None and not paper_ids:
+        return []
+    if not db_path.exists():
+        raise FileNotFoundError(f"索引文件不存在：{db_path}\n请先运行 `autor index`")
+
+    terms = _fts_tokens(query)
+    match_expr = _build_node_match(query, query_mode=query_mode, require_terms=require_terms)
+    if not match_expr:
+        return []
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        _ensure_node_fts_table(conn)
+        filter_sql, filter_params = _build_filter_clause(
+            year=year,
+            journal=journal,
+            paper_type=paper_type,
+            table_alias="p",
+        )
+        ids_sql, ids_params = _paper_ids_clause("n", paper_ids)
+        rows = []
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    n.node_id, n.paper_id, n.dir_name, n.ordinal, n.kind, n.section,
+                    n.title AS node_title, n.ref_path, n.prev_id, n.next_id, n.content,
+                    p.title, p.authors, p.year, p.journal, p.doi, p.paper_type, p.citation_count,
+                    bm25(paper_node_fts) AS rank
+                FROM paper_node_fts
+                JOIN paper_nodes n ON n.node_id = paper_node_fts.node_id
+                JOIN papers p ON p.paper_id = n.paper_id
+                WHERE paper_node_fts MATCH ?{filter_sql}{ids_sql}
+                ORDER BY rank, n.paper_id, n.ordinal
+                LIMIT ?
+                """,
+                [match_expr, *filter_params, *ids_params, top_k],
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _log.debug("node FTS query failed, using LIKE fallback: %s", exc)
+
+        if not rows:
+            rows = _search_nodes_like_fallback(
+                conn,
+                terms,
+                top_k=top_k,
+                year=year,
+                journal=journal,
+                paper_type=paper_type,
+                paper_ids=paper_ids,
+            )
+
+        excluded = [str(t).strip().lower() for t in exclude_terms or [] if str(t).strip()]
+        results: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            content = str(item.get("content") or "")
+            if excluded and any(term in content.lower() for term in excluded):
+                continue
+            item["snippet"] = _extract_snippet(content, terms)
+            item["match"] = "fts"
+            rank = item.get("rank")
+            item["score"] = float(-rank) if isinstance(rank, (int, float)) else 0.0
+            results.append(item)
+        return results[:top_k]
+    finally:
+        conn.close()
+
+
+def _search_nodes_like_fallback(
+    conn: sqlite3.Connection,
+    terms: list[str],
+    *,
+    top_k: int,
+    year: str | None,
+    journal: str | None,
+    paper_type: str | None,
+    paper_ids: set[str] | None,
+) -> list[sqlite3.Row]:
+    """Fallback deterministic LIKE scan used when FTS has no hits."""
+    if not terms:
+        return []
+    conditions: list[str] = []
+    params: list[str] = []
+    for term in terms[:8]:
+        escaped = _escape_like(term)
+        conditions.append("LOWER(n.content) LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped.lower()}%")
+    filter_sql, filter_params = _build_filter_clause(
+        year=year,
+        journal=journal,
+        paper_type=paper_type,
+        table_alias="p",
+    )
+    ids_sql, ids_params = _paper_ids_clause("n", paper_ids)
+    return conn.execute(
+        f"""
+        SELECT
+            n.node_id, n.paper_id, n.dir_name, n.ordinal, n.kind, n.section,
+            n.title AS node_title, n.ref_path, n.prev_id, n.next_id, n.content,
+            p.title, p.authors, p.year, p.journal, p.doi, p.paper_type, p.citation_count,
+            999.0 AS rank
+        FROM paper_nodes n
+        JOIN papers p ON p.paper_id = n.paper_id
+        WHERE ({' OR '.join(conditions)}){filter_sql}{ids_sql}
+        ORDER BY n.paper_id, n.ordinal
+        LIMIT ?
+        """,
+        [*params, *filter_params, *ids_params, top_k],
+    ).fetchall()
+
+
+def auditable_search(
+    query: str,
+    db_path: Path,
+    top_k: int | None = None,
+    cfg: Config | None = None,
+    *,
+    year: str | None = None,
+    journal: str | None = None,
+    paper_type: str | None = None,
+    paper_ids: set[str] | None = None,
+    query_mode: str = "or",
+) -> list[dict]:
+    """Return paper-level results aggregated from deterministic evidence nodes."""
+    if top_k is None:
+        top_k = cfg.search.top_k if cfg is not None else 20
+    node_hits = search_nodes(
+        query,
+        db_path,
+        top_k=max(top_k * 4, top_k),
+        cfg=cfg,
+        year=year,
+        journal=journal,
+        paper_type=paper_type,
+        paper_ids=paper_ids,
+        query_mode=query_mode,
+    )
+    return _aggregate_node_hits(node_hits, top_k=top_k)
+
+
+def _aggregate_node_hits(node_hits: list[dict], *, top_k: int) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for rank, hit in enumerate(node_hits):
+        pid = hit["paper_id"]
+        score = 1.0 / (60 + rank + 1)
+        evidence = {
+            "node_id": hit["node_id"],
+            "section": hit["section"],
+            "snippet": hit["snippet"],
+            "ref_path": hit["ref_path"],
+        }
+        if pid not in merged:
+            merged[pid] = {
+                "paper_id": pid,
+                "dir_name": hit.get("dir_name", ""),
+                "title": hit.get("title", ""),
+                "authors": hit.get("authors", ""),
+                "year": hit.get("year", ""),
+                "journal": hit.get("journal", ""),
+                "doi": hit.get("doi", ""),
+                "paper_type": hit.get("paper_type", ""),
+                "citation_count": hit.get("citation_count", ""),
+                "score": score,
+                "match": "fts",
+                "evidence_count": 1,
+                "evidence": [evidence],
+            }
+        else:
+            merged[pid]["score"] += score
+            merged[pid]["evidence_count"] += 1
+            if len(merged[pid]["evidence"]) < 3:
+                merged[pid]["evidence"].append(evidence)
+
+    results = sorted(merged.values(), key=lambda item: item["score"], reverse=True)
+    return results[:top_k]
+
+
 def search(
     query: str,
     db_path: Path,
@@ -532,10 +1110,11 @@ def search(
     paper_type: str | None = None,
     paper_ids: set[str] | None = None,
 ) -> list[dict]:
-    """FTS5 关键词全文检索。
+    """可审计关键词检索。
 
-    在 ``title``、``abstract``、``conclusion`` 字段上执行 FTS5 MATCH，
-    按 BM25 相关性排序返回结果。
+    在 ``paper_nodes`` / ``paper_node_fts`` 节点级证据索引上执行确定性
+    FTS5 检索，再按论文聚合返回结果。结果中的 ``evidence`` 字段保留
+    命中节点、片段和 ``paper.md`` 路径，供模型回答时追溯来源。
 
     Args:
         query: 检索词（多词用空格分隔，FTS5 语法）。
@@ -555,39 +1134,16 @@ def search(
     Raises:
         FileNotFoundError: 索引文件或 FTS5 表不存在。
     """
-    if top_k is None:
-        top_k = cfg.search.top_k if cfg is not None else 20
-
-    if not db_path.exists():
-        raise FileNotFoundError(f"索引文件不存在：{db_path}\n请先运行 `autor index`")
-
-    conn = sqlite3.connect(db_path)
-    try:
-        _ensure_fts_table(conn)
-
-        conn.row_factory = sqlite3.Row
-        filter_sql, filter_params = _build_filter_clause(year=year, journal=journal, paper_type=paper_type)
-
-        # Over-fetch when post-filtering by paper_ids to avoid empty results
-        fetch_k = top_k * 5 if paper_ids else top_k
-
-        rows = conn.execute(
-            f"""
-            SELECT {_SEARCH_COLS}
-            FROM papers
-            WHERE papers MATCH ?{filter_sql}
-            ORDER BY rank
-            LIMIT ?
-            """,
-            [_safe_query(query), *filter_params, fetch_k],
-        ).fetchall()
-        results = [dict(r) for r in rows]
-        _enrich_dir_names(results, conn)
-    finally:
-        conn.close()
-    if paper_ids is not None:
-        results = [r for r in results if r["paper_id"] in paper_ids]
-    return results[:top_k]
+    return auditable_search(
+        query,
+        db_path,
+        top_k=top_k,
+        cfg=cfg,
+        year=year,
+        journal=journal,
+        paper_type=paper_type,
+        paper_ids=paper_ids,
+    )
 
 
 def search_author(
@@ -736,6 +1292,8 @@ def _build_filter_clause(
     year: str | None = None,
     journal: str | None = None,
     paper_type: str | None = None,
+    *,
+    table_alias: str = "",
 ) -> tuple[str, list[str]]:
     """构建过滤 WHERE 子句（不含前导 AND/WHERE）。
 
@@ -748,17 +1306,19 @@ def _build_filter_clause(
     Returns:
         ``(clauses_str, params)``，clauses_str 每个条件前带 ``AND``。
     """
+    prefix = f"{table_alias}." if table_alias else ""
     clauses: list[str] = []
     params: list[str] = []
     if year:
         yc, yp = _parse_year_filter(year)
+        yc = yc.replace("year", f"{prefix}year")
         clauses.append(yc)
         params.extend(yp)
     if journal:
-        clauses.append("journal LIKE ?")
+        clauses.append(f"{prefix}journal LIKE ?")
         params.append(f"%{journal}%")
     if paper_type:
-        clauses.append("paper_type LIKE ?")
+        clauses.append(f"{prefix}paper_type LIKE ?")
         params.append(f"%{paper_type}%")
     sql = "".join(f" AND {c}" for c in clauses)
     return sql, params
@@ -785,10 +1345,8 @@ def _enrich_dir_names(results: list[dict], conn: sqlite3.Connection) -> list[dic
 def lookup_paper(db_path: Path, user_input: str) -> dict | None:
     """查找论文：支持 UUID、dir_name、DOI、PMID、专利公开号。
 
-    按以下顺序尝试匹配: UUID → dir_name → DOI → publication_number → PMID。
-    对纯数字输入，优先匹配专利公开号以兼容历史行为；若需要强制按 PMID
-    查询，可使用 ``PMID:12345678`` 形式。PMID 查询会自动归一化数字形式；
-    公开号查询会自动归一化为大写。
+    按以下顺序尝试匹配: UUID → dir_name → DOI → PMID → publication_number。
+    PMID 查询会自动归一化数字形式；公开号查询会自动归一化为大写。
 
     Args:
         db_path: SQLite 数据库路径。
@@ -810,7 +1368,7 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
         if not has_table:
             return None
         conn.row_factory = sqlite3.Row
-        _ensure_registry_runtime_compat(conn)
+        _ensure_registry_indexes(conn)
         # Try UUID
         row = conn.execute("SELECT * FROM papers_registry WHERE id = ?", (raw_input,)).fetchone()
         if row:
@@ -819,47 +1377,35 @@ def lookup_paper(db_path: Path, user_input: str) -> dict | None:
         row = conn.execute("SELECT * FROM papers_registry WHERE dir_name = ?", (raw_input,)).fetchone()
         if row:
             return dict(row)
-        # Try DOI (new DBs store lowercase DOI; old DBs may still contain mixed case)
+        # Try DOI
         normalized_doi = _normalize_doi(raw_input)
         row = conn.execute(
             "SELECT * FROM papers_registry WHERE doi = ?",
             (normalized_doi,),
         ).fetchone()
-        if not row:
-            # Backward compatibility for pre-normalization registries.
-            row = conn.execute(
-                "SELECT * FROM papers_registry WHERE LOWER(doi) = ?",
-                (normalized_doi,),
-            ).fetchone()
         if row:
             return dict(row)
-        # Try patent publication number (normalize to uppercase)
-        try:
+        normalized_pmid = _normalize_pmid(raw_input)
+        if normalized_pmid:
             row = conn.execute(
-                "SELECT * FROM papers_registry WHERE publication_number = ?",
-                (raw_input.upper().strip(),),
+                "SELECT * FROM papers_registry WHERE pmid = ?",
+                (normalized_pmid,),
             ).fetchone()
             if row:
                 return dict(row)
-        except sqlite3.OperationalError:
-            pass  # column may not exist in old DB
-        normalized_pmid = _normalize_pmid(raw_input)
-        if normalized_pmid:
-            try:
-                row = conn.execute(
-                    "SELECT * FROM papers_registry WHERE pmid = ?",
-                    (normalized_pmid,),
-                ).fetchone()
-                if row:
-                    return dict(row)
-            except sqlite3.OperationalError:
-                pass
             row = _lookup_registry_dir_prefix(
                 conn,
                 [f"PMID-{normalized_pmid}-", f"PMID:{normalized_pmid}-", f"PMID_{normalized_pmid}_"],
             )
             if row:
                 return dict(row)
+        # Try patent publication number (normalize to uppercase)
+        row = conn.execute(
+            "SELECT * FROM papers_registry WHERE publication_number = ?",
+            (raw_input.upper().strip(),),
+        ).fetchone()
+        if row:
+            return dict(row)
         # Last-chance prefix matching for callers that pass a dir_name stem.
         prefix_candidates = [raw_input]
         if normalized_doi:
@@ -905,21 +1451,15 @@ def find_exact_matches(
         ).fetchone()
         if not has_table:
             raise FileNotFoundError(f"papers_registry missing in index: {db_path}")
-        _ensure_registry_runtime_compat(conn)
+        _ensure_registry_indexes(conn)
 
         results: dict[str, list[dict]] = {"doi": [], "pmid": [], "title": []}
         normalized_doi = _normalize_doi(doi)
         if normalized_doi:
-            rows = _select_registry_rows(conn, "doi = ?", (normalized_doi,), paper_ids=paper_ids)
-            if not rows:
-                rows = _select_registry_rows(conn, "LOWER(doi) = ?", (normalized_doi,), paper_ids=paper_ids)
-            results["doi"] = rows
+            results["doi"] = _select_registry_rows(conn, "doi = ?", (normalized_doi,), paper_ids=paper_ids)
         normalized_pmid = _normalize_pmid(pmid)
         if normalized_pmid:
-            try:
-                results["pmid"] = _select_registry_rows(conn, "pmid = ?", (normalized_pmid,), paper_ids=paper_ids)
-            except sqlite3.OperationalError:
-                results["pmid"] = []
+            results["pmid"] = _select_registry_rows(conn, "pmid = ?", (normalized_pmid,), paper_ids=paper_ids)
         normalized_title = _normalize_exact_title(title)
         if normalized_title:
             results["title"] = _select_registry_rows(
@@ -939,106 +1479,278 @@ def find_exact_matches(
         conn.close()
 
 
-def unified_search(
+def research_bundle(
     query: str,
     db_path: Path,
-    top_k: int | None = None,
-    cfg: Config | None = None,
     *,
+    run_dir: Path | None = None,
+    top_k: int = 10,
+    cfg: Config | None = None,
     year: str | None = None,
     journal: str | None = None,
     paper_type: str | None = None,
     paper_ids: set[str] | None = None,
-) -> list[dict]:
-    """融合检索：FTS5 关键词 + FAISS 语义向量，合并去重排序。
-
-    两路并行检索，各取 ``top_k`` 条候选，按 ``paper_id`` 去重后
-    以综合得分排序返回。FTS5 命中的论文获得排名加分，向量检索的
-    论文按余弦相似度得分。同时命中的论文得分叠加，排名更靠前。
-
-    当向量索引不可用时（未运行 ``embed``），自动降级为纯 FTS5 检索。
+    neighbors: int = 1,
+    max_chars: int = 40000,
+    per_node_max_chars: int = 6000,
+) -> dict:
+    """Run one deterministic evidence-bundling round.
 
     Args:
-        query: 自然语言查询文本。
-        db_path: SQLite 数据库路径。
-        top_k: 最多返回条数，为 ``None`` 时从配置读取。
-        cfg: 可选的 :class:`~autor.config.Config` 实例。
-        year: 年份过滤。
-        journal: 期刊名过滤。
-        paper_type: 论文类型过滤。
-        paper_ids: 论文 UUID 白名单，仅返回集合内的结果。
+        query: Research question or search goal.
+        db_path: SQLite index path.
+        run_dir: Optional directory where bundle/trace/verify artifacts are written.
+        top_k: Seed node count.
+        cfg: Optional config.
+        year: Optional year filter.
+        journal: Optional journal filter.
+        paper_type: Optional type filter.
+        paper_ids: Optional UUID whitelist.
+        neighbors: Previous/next node expansion count within each paper.
+        max_chars: Total Markdown bundle budget.
+        per_node_max_chars: Per evidence node body budget.
 
     Returns:
-        论文字典列表，按综合得分降序。每项包含 ``paper_id``, ``title``,
-        ``authors``, ``year``, ``journal``, ``score``, ``match``
-        （``"fts"`` / ``"vec"`` / ``"both"``）。
+        Dict containing ``bundle_json``, ``bundle_md``, ``trace``, ``verify`` and
+        optionally artifact ``paths``.
     """
-    if top_k is None:
-        top_k = cfg.search.top_k if cfg is not None else 20
-
-    # -- FTS5 leg --
-    fts_results: list[dict] = []
-    try:
-        fts_results = search(
-            query,
-            db_path,
-            top_k=top_k,
-            cfg=cfg,
-            year=year,
-            journal=journal,
-            paper_type=paper_type,
-            paper_ids=paper_ids,
-        )
-    except FileNotFoundError:
-        pass
-
-    # -- Vector leg (graceful degradation) --
-    vec_results: list[dict] = []
-    try:
-        from autor.vectors import vsearch
-
-        vec_results = vsearch(
-            query,
-            db_path,
-            top_k=top_k,
-            cfg=cfg,
-            year=year,
-            journal=journal,
-            paper_type=paper_type,
-            paper_ids=paper_ids,
-        )
-    except (FileNotFoundError, ImportError):
-        pass
-
-    # -- Merge via Reciprocal Rank Fusion (RRF) --
-    # RRF score = sum of 1/(k + rank) across retrieval legs.
-    # k=60 is the standard constant from Cormack et al. (2009).
-    rrf_k = 60
-    merged: dict[str, dict] = {}  # paper_id → result dict
-
-    for rank, r in enumerate(fts_results):
-        pid = r["paper_id"]
-        merged[pid] = {
-            **r,
-            "score": 1.0 / (rrf_k + rank + 1),
-            "match": "fts",
-        }
-
-    for rank, r in enumerate(vec_results):
-        pid = r["paper_id"]
-        rrf_score = 1.0 / (rrf_k + rank + 1)
-        if pid in merged:
-            merged[pid]["score"] += rrf_score
-            merged[pid]["match"] = "both"
-        else:
-            merged[pid] = {
-                **r,
-                "score": rrf_score,
-                "match": "vec",
+    seed_nodes = search_nodes(
+        query,
+        db_path,
+        top_k=top_k,
+        cfg=cfg,
+        year=year,
+        journal=journal,
+        paper_type=paper_type,
+        paper_ids=paper_ids,
+    )
+    evidence_nodes = _expand_research_nodes(db_path, seed_nodes, neighbors=max(0, int(neighbors)))
+    bundle_md, rendered_nodes, budget_exhausted = _render_research_bundle_md(
+        query,
+        evidence_nodes,
+        max_chars=max_chars,
+        per_node_max_chars=per_node_max_chars,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    trace = {
+        "query": query,
+        "created_at": now,
+        "seed_node_ids": [n["node_id"] for n in seed_nodes],
+        "rendered_node_ids": [n["node_id"] for n in rendered_nodes],
+        "filters": {"year": year, "journal": journal, "paper_type": paper_type, "paper_ids": sorted(paper_ids or [])},
+        "neighbors": neighbors,
+        "top_k": top_k,
+        "budget": {"max_chars": max_chars, "per_node_max_chars": per_node_max_chars},
+    }
+    verify = {
+        "ok": bool(rendered_nodes) and not budget_exhausted,
+        "has_evidence": bool(rendered_nodes),
+        "evidence_count": len(rendered_nodes),
+        "references_count": len({n.get("ref_path", "") for n in rendered_nodes if n.get("ref_path")}),
+        "budget_exhausted": budget_exhausted,
+    }
+    bundle_json = {
+        "search_goal": {"query": query, "filters": trace["filters"]},
+        "coverage_assessment": {
+            "status": "covered" if rendered_nodes else "no_hits",
+            "seed_hits": len(seed_nodes),
+            "evidence_items": len(rendered_nodes),
+        },
+        "answerability_assessment": {
+            "status": "answer_from_bundle" if rendered_nodes else "insufficient_evidence",
+            "constraint": "Answer only from evidence_items and preserve references.",
+        },
+        "probe_trace": trace,
+        "evidence_items": [
+            {
+                "node_id": n["node_id"],
+                "paper_id": n["paper_id"],
+                "dir_name": n.get("dir_name", ""),
+                "title": n.get("title", ""),
+                "section": n.get("section", ""),
+                "ref_path": n.get("ref_path", ""),
+                "snippet": n.get("snippet", ""),
             }
+            for n in rendered_nodes
+        ],
+        "round_decision": {
+            "stop": bool(rendered_nodes) and not budget_exhausted,
+            "reason": "sufficient_bundle" if rendered_nodes and not budget_exhausted else "revise_query_or_budget",
+        },
+    }
+    paths: dict[str, str] = {}
+    if run_dir is not None:
+        paths = _write_research_artifacts(run_dir, bundle_json, bundle_md, trace, verify)
+    return {
+        "bundle_json": bundle_json,
+        "bundle_md": bundle_md,
+        "trace": trace,
+        "verify": verify,
+        "paths": paths,
+    }
 
-    results = sorted(merged.values(), key=lambda x: x["score"], reverse=True)
-    return results[:top_k]
+
+def _expand_research_nodes(db_path: Path, seed_nodes: list[dict], *, neighbors: int) -> list[dict]:
+    if not seed_nodes or neighbors <= 0:
+        return seed_nodes
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+
+    def add(node_id: str | None) -> None:
+        if node_id and node_id not in seen:
+            seen.add(node_id)
+            ordered_ids.append(node_id)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        for node in seed_nodes:
+            prev_id = node.get("prev_id")
+            prev_chain: list[str] = []
+            for _ in range(neighbors):
+                if not prev_id:
+                    break
+                prev_chain.append(prev_id)
+                row = conn.execute("SELECT prev_id FROM paper_nodes WHERE node_id = ?", (prev_id,)).fetchone()
+                prev_id = row["prev_id"] if row else None
+            for prev in reversed(prev_chain):
+                add(prev)
+            add(node.get("node_id"))
+            next_id = node.get("next_id")
+            for _ in range(neighbors):
+                if not next_id:
+                    break
+                add(next_id)
+                row = conn.execute("SELECT next_id FROM paper_nodes WHERE node_id = ?", (next_id,)).fetchone()
+                next_id = row["next_id"] if row else None
+        return _fetch_nodes_by_ids(conn, ordered_ids, _fts_tokens(" ".join(n.get("snippet", "") for n in seed_nodes)))
+    finally:
+        conn.close()
+
+
+def _fetch_nodes_by_ids(conn: sqlite3.Connection, node_ids: list[str], terms: list[str]) -> list[dict]:
+    if not node_ids:
+        return []
+    placeholders = ",".join("?" for _ in node_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+            n.node_id, n.paper_id, n.dir_name, n.ordinal, n.kind, n.section,
+            n.title AS node_title, n.ref_path, n.prev_id, n.next_id, n.content,
+            p.title, p.authors, p.year, p.journal, p.doi, p.paper_type, p.citation_count,
+            0.0 AS rank
+        FROM paper_nodes n
+        JOIN papers p ON p.paper_id = n.paper_id
+        WHERE n.node_id IN ({placeholders})
+        """,
+        node_ids,
+    ).fetchall()
+    by_id = {row["node_id"]: dict(row) for row in rows}
+    out: list[dict] = []
+    for node_id in node_ids:
+        item = by_id.get(node_id)
+        if not item:
+            continue
+        item["snippet"] = _extract_snippet(str(item.get("content") or ""), terms)
+        item["match"] = "fts"
+        item["score"] = 0.0
+        out.append(item)
+    return out
+
+
+def _render_research_bundle_md(
+    query: str,
+    nodes: list[dict],
+    *,
+    max_chars: int,
+    per_node_max_chars: int,
+) -> tuple[str, list[dict], bool]:
+    parts = [
+        "# AutoR Evidence Bundle\n\n",
+        "## Search Goal\n\n",
+        f"{query}\n\n",
+        "## Coverage Assessment\n\n",
+        f"- seed coverage: {'covered' if nodes else 'no_hits'}\n",
+        f"- evidence items: {len(nodes)}\n\n",
+        "## Answerability Assessment\n\n",
+        "- Answer only from the evidence below; do not invent citations or claims outside this bundle.\n\n",
+        "## Probe Trace\n\n",
+        "- retrieval: deterministic node-level SQLite FTS5 with CJK 2-gram and ASCII-word tokens\n\n",
+        "## Evidence\n\n",
+    ]
+    rendered: list[dict] = []
+    used = sum(len(part) for part in parts)
+    budget_exhausted = False
+    for node in nodes:
+        content = str(node.get("content") or "")
+        marker = ""
+        if per_node_max_chars > 0 and len(content) > per_node_max_chars:
+            content = content[:per_node_max_chars].rstrip() + "\n"
+            marker = "*(TRUNCATED)*\n\n"
+        block = (
+            f"### `{node.get('node_id')}` {node.get('title') or node.get('node_title') or ''}\n\n"
+            f"- paper_id: `{node.get('paper_id')}`\n"
+            f"- dir_name: `{node.get('dir_name', '')}`\n"
+            f"- section: {node.get('section', '')}\n"
+            f"- ref: `{node.get('ref_path', '')}`\n\n"
+            f"{marker}{content.strip()}\n\n"
+        )
+        if max_chars > 0 and used + len(block) > max_chars:
+            budget_exhausted = True
+            break
+        parts.append(block)
+        used += len(block)
+        rendered.append(node)
+
+    parts.append("## References\n\n")
+    for ref in sorted({str(node.get("ref_path") or "") for node in rendered if node.get("ref_path")}):
+        parts.append(f"- `{ref}`\n")
+    if budget_exhausted:
+        parts.append("\n> BUDGET EXHAUSTED. Increase `--max-chars` or lower `--top/--neighbors`.\n")
+    return "".join(parts), rendered, budget_exhausted
+
+
+def _write_research_artifacts(
+    run_dir: Path,
+    bundle_json: dict,
+    bundle_md: str,
+    trace: dict,
+    verify: dict,
+) -> dict[str, str]:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    round_no = _next_round_no(run_dir)
+    suffix = f"round{round_no:02d}"
+    bundle_json_path = run_dir / "bundle.json"
+    bundle_md_path = run_dir / "bundle.md"
+    round_bundle_path = run_dir / f"bundle.{suffix}.md"
+    trace_path = run_dir / f"trace.{suffix}.json"
+    verify_path = run_dir / f"verify.{suffix}.json"
+    trace_jsonl = run_dir / "trace.jsonl"
+
+    bundle_json_path.write_text(json.dumps(bundle_json, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    bundle_md_path.write_text(bundle_md, encoding="utf-8")
+    round_bundle_path.write_text(bundle_md, encoding="utf-8")
+    trace_path.write_text(json.dumps(trace, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    verify_path.write_text(json.dumps(verify, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    with trace_jsonl.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(trace, ensure_ascii=False) + "\n")
+    return {
+        "bundle_json": str(bundle_json_path),
+        "bundle_md": str(bundle_md_path),
+        "round_bundle_md": str(round_bundle_path),
+        "trace": str(trace_path),
+        "verify": str(verify_path),
+        "trace_jsonl": str(trace_jsonl),
+    }
+
+
+def _next_round_no(run_dir: Path) -> int:
+    existing = []
+    for path in run_dir.glob("trace.round*.json"):
+        match = re.search(r"round(\d+)", path.name)
+        if match:
+            existing.append(int(match.group(1)))
+    return (max(existing) + 1) if existing else 1
 
 
 # ============================================================================

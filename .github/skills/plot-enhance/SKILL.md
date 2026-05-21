@@ -9,11 +9,11 @@ tags: ["biomedical", "figure", "prompt-enhancement", "nature-reviews", "biorende
 
 # plot-enhance
 
-Use this skill **immediately before** `autor plot` or any other image-generation call for biology, medicine, anatomy, immunology, neuroscience, oncology, or translational figures.
+Use this skill **immediately before** `autor plot` / `autor.plot.generate_plot()` for biology, medicine, anatomy, immunology, neuroscience, oncology, or translational figures.
 
 ## Goal
 
-Do **not** draw first. First reconstruct the real biological scene from domain knowledge, fill in the missing structures that must exist, constrain their locations and interactions, and only then write the final image prompt.
+Do **not** draw first, and do not create manual PIL/SVG/HTML drawing scripts as substitutes. First reconstruct the real biological scene from domain knowledge, fill in the missing structures that must exist, constrain their locations and interactions, and only then write the final prompt for `autor plot`.
 
 The priority order is:
 
@@ -49,7 +49,7 @@ Preferred source priority:
 
 - `workspace/<name>/final.md`
 - review draft markdown provided by the user
-- section-level evidence / table-plan files if they help figure design
+- `table-figure-plan.md`, `evidence-ledger.md`, and `reference-map.json` if they help figure design
 
 If a full manuscript is available, do not skip reading it. The figure prompt must be grounded in the manuscript's actual argument structure, not only in the figure title.
 

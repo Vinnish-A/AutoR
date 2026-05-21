@@ -87,7 +87,7 @@ Hard rule:
 
 ## 3. High-priority cleanup targets
 
-This skill has seven high-priority cleanup categories. Handle them systematically rather than merely smoothing wording on the surface.
+This skill has eight high-priority cleanup categories. Handle them systematically rather than merely smoothing wording on the surface.
 
 ---
 
@@ -287,6 +287,29 @@ Revision direction:
 
 ---
 
+### Category 8: overused em dashes and dash-driven cadence
+
+AI-polished academic prose often leans on em dashes (`—`) or sentence-level double hyphens (`--`) to create instant contrast, explanation, or rhythm. Treat repeated dash compression as a visible AI cadence unless each instance is doing necessary syntactic work.
+
+Detection:
+
+- Count em dashes (`—`) and sentence-level double hyphens (` -- ` or `--` used as punctuation).
+- Ignore hyphens inside compounds, minus signs, page ranges, and legitimate en dashes in numeric ranges.
+- Flag the text if any paragraph contains more than one dash break.
+- Flag the text if adjacent paragraphs both rely on dash breaks.
+- Flag the whole text if it contains more than roughly two dash breaks per 1,000 words.
+
+Revision direction:
+
+- Replace ornamental dashes with periods when two claims should stand independently.
+- Replace explanatory dashes with commas or parentheses when the inserted phrase is minor.
+- Replace contrastive dashes with a semicolon, colon, or a rewritten causal/contrastive sentence.
+- Split long dash-heavy sentences into shorter sentences when the dash is compensating for weak structure.
+- Keep only the few dashes that mark a genuinely necessary interruption, appositive clarification, or decisive contrast.
+- After revision, rescan; if the count remains high, repeat until dashes no longer define the prose rhythm.
+
+---
+
 ## 4. New highest-priority rule: ban metanarrative section/table explanations from the main text
 
 Any expression of the following types should be treated as non-final-draft language.
@@ -330,6 +353,7 @@ These are instructions to an editor or a prompt, not sentences for a finished su
 - **Tense correctness**: methods/results usually take past tense; field-level consensus usually takes present tense
 - **Stable perspective**: maintain objective third-person scholarly narration throughout
 - **Cadence variation**: not every paragraph should climax in a polished synthesis flourish or repeated em-dash compression
+- **Dash discipline**: em dashes should be rare; repeated dash breaks must be detected and rewritten, not merely replaced mechanically
 - **Remove system-environment traces**: no workflow language should remain
 - **Remove metanarrative traces**: the author should not visibly narrate the organization of the text
 - **Finished-manuscript expression**: the whole text should read like a finalized paper, not a manuscript under repair
@@ -374,13 +398,14 @@ A rewritten paragraph should contain:
 
 - return the polished text directly
 - if the user asks, also summarize the main edits
-- if the user asks for categorized changes, summarize them under these six groups:
+- if the user asks for categorized changes, summarize them under these seven groups:
   1. system/workflow traces
   2. metanarrative and section-organization explanations
   3. mechanical connectives
   4. self-correction and revision traces
   5. decorative modifiers and conversational phrasing
   6. mixed Chinese/English terminology issues
+  7. overused em dashes and dash-driven cadence
 - if citation-placeholder sentences exist, add a separate summary of how placeholder citations were rewritten into fact-bearing prose
 - if polishing a file, save the polished version alongside it (for example, `polished.md`)
 - optionally output docx/pdf for review if requested

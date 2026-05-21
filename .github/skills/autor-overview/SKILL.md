@@ -45,11 +45,10 @@ Summarize them by group. Start with the overview, then go deeper only if the use
 #### Knowledge-base management
 - `search`: search the local literature library
 - `show`: view paper content layer by layer
-- `enrich`: extract TOC / conclusions / abstracts / citation counts
+- `enrich`: extract TOC / generate L3 conclusion cards / backfill abstracts / refresh citation counts
 - `ingest`: batch-ingest papers, theses, and general documents
-- `index`: rebuild FTS5 / FAISS indexes
+- `index`: rebuild the node-level FTS5 evidence index
 - `explore`: fetch independent exploration datasets from OpenAlex
-- `topics`: BERTopic clustering and visualization
 - `graph`: citation-graph and shared-reference analysis
 - `citations`: top-cited rankings and citation-count refresh
 - `export`: export BibTeX
@@ -83,10 +82,9 @@ Additional note:
 
 Beyond the skills, explain the underlying system capabilities autor provides:
 
-- **PDF -> Markdown**: MinerU preserves figures, LaTeX formulas, and image attachments
-- **Layered loading**: L1 metadata, L2 abstract, L3 conclusion, L4 full text
-- **Hybrid retrieval**: FTS5 keywords + Qwen3 embeddings + FAISS semantic search + RRF fusion
-- **Topic modeling**: BERTopic clustering with HTML visualizations
+- **PDF -> Markdown**: MinerU preserves LaTeX formulas and structured text; image attachments are stripped and generated review figures must use `autor plot` / `autor/plot.py`
+- **Layered loading**: L1 metadata, L2 abstract, L3 paper-level conclusion card, L4 full text
+- **Auditable retrieval**: node-level SQLite FTS5 over metadata and `paper.md`, with bundle/trace/verify artifacts for provenance
 - **Explore's isolated data flow**: build external exploration libraries from OpenAlex without affecting the main library
 - **Citation graph**: references, citations, and shared-citation analysis
 - **Multi-source import**: Endnote, Zotero, PDF, Markdown
@@ -111,7 +109,7 @@ When the user asks a broad question, organize the answer in this order by defaul
 - The user wants to find papers: switch to `search`
 - The user wants to read a paper: switch to `show`
 - The user wants to ingest new literature: switch to `ingest`
-- The user wants topic analysis: switch to `topics` or `explore`
+- The user wants topic analysis: use `search`, `research`, or `explore` to build an evidence-grounded theme map
 - The user wants to expand an existing workspace through external acquisition: switch to `autodownload`
 - The user wants to build a new workspace from a topic / outline and needs external literature acquisition: switch to `autodownload`
 - The user wants to revise structure, classify papers, and design tables before writing a review: switch to `plan`

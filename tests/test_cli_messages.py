@@ -27,35 +27,6 @@ class TestSetupImportHints:
         assert "autor import-zotero --local /path/to/zotero.sqlite\n" in zh_hint
 
 
-class TestShowLayer4Headings:
-    def test_translated_full_text_heading_uses_consistent_spacing(self, tmp_papers, monkeypatch):
-        paper_dir = tmp_papers / "Smith-2023-Turbulence"
-        (paper_dir / "paper_zh.md").write_text("中文全文。", encoding="utf-8")
-
-        messages: list[str] = []
-        monkeypatch.setattr(cli, "ui", messages.append)
-        monkeypatch.setattr(cli, "_print_header", lambda _: None)
-
-        cfg = SimpleNamespace(papers_dir=tmp_papers, index_db=tmp_papers / "index.db")
-        args = Namespace(paper_id="Smith-2023-Turbulence", layer=4, lang="zh")
-
-        cli.cmd_show(args, cfg)
-
-        assert "\n--- 全文（zh） ---\n" in messages
-
-    def test_missing_translation_heading_uses_consistent_spacing(self, tmp_papers, monkeypatch):
-        messages: list[str] = []
-        monkeypatch.setattr(cli, "ui", messages.append)
-        monkeypatch.setattr(cli, "_print_header", lambda _: None)
-
-        cfg = SimpleNamespace(papers_dir=tmp_papers, index_db=tmp_papers / "index.db")
-        args = Namespace(paper_id="Smith-2023-Turbulence", layer=4, lang="fr")
-
-        cli.cmd_show(args, cfg)
-
-        assert "\n--- 全文（原文，paper_fr.md 不存在） ---\n" in messages
-
-
 class TestShowNotesIntegration:
     def test_notes_displayed_after_header(self, tmp_papers, monkeypatch):
         paper_dir = tmp_papers / "Smith-2023-Turbulence"

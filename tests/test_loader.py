@@ -8,7 +8,6 @@ layers that require LLM enrichment or full-text paper files.
 from __future__ import annotations
 
 import json
-import logging
 from typing import cast
 
 from autor.config import Config
@@ -102,38 +101,18 @@ class TestEnrichL3Skip:
 
 
 class TestLoadL4:
-    """L4 contract: returns full markdown text, with optional translated version."""
+    """L4 contract: returns full markdown text."""
 
     def test_returns_original_text(self, tmp_papers):
         md_path = tmp_papers / "Smith-2023-Turbulence" / "paper.md"
         result = load_l4(md_path)
         assert "Turbulence modeling" in result
 
-    def test_prefers_translated_when_lang_specified(self, tmp_papers):
+    def test_ignores_sidecar_markdown(self, tmp_papers):
         paper_dir = tmp_papers / "Smith-2023-Turbulence"
-        (paper_dir / "paper_zh.md").write_text("# 边界层湍流建模\n\n中文全文。", encoding="utf-8")
-        result = load_l4(paper_dir / "paper.md", lang="zh")
-        assert "边界层湍流建模" in result
-
-    def test_falls_back_to_original_when_translation_missing(self, tmp_papers):
-        md_path = tmp_papers / "Smith-2023-Turbulence" / "paper.md"
-        result = load_l4(md_path, lang="fr")
+        (paper_dir / "paper_extra.md").write_text("sidecar", encoding="utf-8")
+        result = load_l4(paper_dir / "paper.md")
         assert "Turbulence modeling" in result
-
-    def test_no_lang_returns_original(self, tmp_papers):
-        paper_dir = tmp_papers / "Smith-2023-Turbulence"
-        (paper_dir / "paper_zh.md").write_text("中文", encoding="utf-8")
-        result = load_l4(paper_dir / "paper.md", lang=None)
-        assert "Turbulence modeling" in result
-
-    def test_invalid_lang_logs_warning_without_traceback(self, tmp_papers, caplog):
-        md_path = tmp_papers / "Smith-2023-Turbulence" / "paper.md"
-        with caplog.at_level(logging.WARNING, logger="autor.loader"):
-            result = load_l4(md_path, lang="../bad")
-        assert "Turbulence modeling" in result
-        records = [r for r in caplog.records if "invalid lang code" in r.getMessage()]
-        assert records
-        assert all(r.exc_info is None for r in records)
 
 
 class TestNotes:

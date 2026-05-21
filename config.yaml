@@ -50,11 +50,10 @@ llm:
 # Ingest pipeline 数据入库管道
 ingest:
   extractor: robust # auto | regex | llm | robust
-  mineru_mode: hybrid # local | cloud | hybrid
+  mineru_mode: hybrid # local | cloud | hybrid; hybrid runs local + all cloud tokens in parallel
   mineru_endpoint: http://localhost:8000 # Local MinerU API 本地 MinerU API
   mineru_cloud_url: https://mineru.net/api/v4 # Cloud MinerU API 云端 MinerU API
   mineru_api_keys: [] # Sensitive values stay in config.local.yaml or env MINERU_API_KEYS
-  mineru_api_key: null # Legacy single key; keep null here, set only in config.local.yaml
   mineru_backend_local: pipeline # local backend: pipeline | vlm-auto-engine | vlm-http-client | hybrid-auto-engine | hybrid-http-client
   mineru_model_version_cloud: pipeline # cloud model_version: pipeline | vlm | MinerU-HTML
   mineru_lang: ch # OCR language for local/cloud MinerU 本地/云端 OCR 语言
@@ -66,7 +65,7 @@ ingest:
   s2_api_key: null # Semantic Scholar API key → config.local.yaml or env S2_API_KEY
   ncbi_api_key: null # NCBI E-utilities / PubMed API key → config.local.yaml or env NCBI_API_KEY
   mineru_cloud_batch_size: 20 # Cloud batch size per token request 每个 token 每批文件数上限
-  mineru_cloud_workers_per_token: 1 # Cloud parallelism is one worker per token
+  mineru_cloud_workers_per_token: 1 # Reserved; effective cloud parallelism is one source per token
   mineru_cloud_max_inflight_batches_per_token: 1
   mineru_cloud_max_files_per_token_per_min: 35
   mineru_cloud_max_result_queries_per_token_per_min: 600
@@ -75,17 +74,8 @@ ingest:
   mineru_cloud_backoff_max_seconds: 600
   chunk_page_limit: 100 # Auto-split PDFs exceeding this page count 超长 PDF 自动切分页数阈值
 
-# Semantic embeddings 语义向量（主库默认做全文 chunking）
-embed:
-  model: Alibaba-NLP/gte-Qwen2-1.5B-instruct
-  cache_dir: ~/.cache/modelscope/hub/models
-  device: auto # auto | cpu | cuda
-  top_k: 10 # vsearch default results vsearch 默认返回条数
-  source: huggingface # huggingface (default) | modelscope (if the model is mirrored) 模型下载源
-  hf_endpoint: null # optional HuggingFace mirror endpoint (env AUTOR_HF_ENDPOINT > HF_ENDPOINT)
-
 search:
-  top_k: 20 # FTS5 search default results 关键词搜索默认返回条数
+  top_k: 20 # Node-level FTS5 search default results 节点级证据检索默认返回条数
 
 # Logging & metrics 日志与指标
 logging:
@@ -94,19 +84,6 @@ logging:
   max_bytes: 10000000 # 10 MB, rotate on overflow 超出轮转
   backup_count: 3
   metrics_db: data/metrics.db
-
-# Topic modeling 主题建模
-topics:
-  min_topic_size: 5 # HDBSCAN min cluster size 最小聚类大小
-  nr_topics: -1 # 0=auto, -1=no merge, N=target count 目标主题数
-  model_dir: data/topic_model # Model save directory 模型保存目录
-
-# Translation 翻译
-translate:
-  auto_translate: false # Whether to auto-translate during pipeline ingest 入库时是否自动翻译
-  target_lang: zh # Default target language 默认目标语言
-  chunk_size: 4000 # Translation chunk size in characters 翻译分块大小（字符）
-  concurrency: 5 # Translation concurrency 翻译并发数
 
 # Plot generation 绘图（GPT Image 2）
 plot:

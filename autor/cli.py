@@ -3,59 +3,64 @@ cli.py — autor 命令行入口
 ================================
 
 命令：
-    autor index [--rebuild]
-    autor embed [--rebuild]
+    autor index [--rebuild] [--status] [--background]
     autor search <query> [--top N] [--year Y] [--journal J] [--type T]
     autor search-author <query> [--top N] [--year Y] [--journal J] [--type T]
-    autor vsearch <query> [--top N] [--year Y] [--journal J] [--type T]
-    autor usearch <query> [--top N] [--year Y] [--journal J] [--type T]
+    autor research <query> [--run-dir DIR]
     autor show <paper-id> [--layer 1|2|3|4]
     autor enrich-toc [<paper-id> | --all] [--force] [--inspect]
-    autor enrich-l3 [<paper-id> | --all] [--force] [--inspect] [--max-retries N]
+    autor enrich-l3 [<paper-id> | --all | --workspace NAME] [--only-missing] [--force] [--inspect] [--max-retries N]
     autor top-cited [--top N] [--year Y] [--journal J] [--type T]
     autor refs <paper-id>
     autor citing <paper-id>
     autor shared-refs <id1> <id2> ... [--min N]
-    autor refetch [<paper-id> | --all] [--force]
+    autor refetch [<paper-id> | --workspace NAME | --all] [--force]
     autor rename [<paper-id> | --all] [--dry-run]
     autor audit [--severity error|warning|info]
     autor repair <paper-id> --title "..." [--doi DOI] [--author NAME] [--year Y] [--no-api] [--dry-run]
     autor backfill-abstract [--dry-run]
-    autor topics [--build] [--rebuild] [--viz] [--topic ID]
     autor pipeline <preset> | --steps <s1,s2,...> [--list] [--dry-run] ...
     autor metrics [--summary] [--last N] [--category CAT] [--since DATE]
     autor setup [check] [--lang en|zh]
     autor migrate-dirs [--execute]
     autor explore fetch --issn <ISSN> [--name NAME] [--year-range Y]
-    autor explore embed --name <NAME> [--rebuild]
-    autor explore topics --name <NAME> [--build] [--rebuild] [--topic ID]
     autor explore search --name <NAME> <query> [--top N]
-    autor explore viz --name <NAME>
     autor explore list
     autor explore info [--name NAME]
     autor export bibtex [<paper-id> ...] [--all] [--year Y] [--journal J] [-o FILE]
-    autor translate [<paper-id> | --all] [--lang LANG] [--force]
     autor import-endnote <file.xml|file.ris> [--no-api] [--dry-run] [--no-convert]
     autor import-zotero [--api-key KEY] [--library-id ID] [--local PATH] [--list-collections] ...
     autor attach-pdf <paper-id> <path/to/paper.pdf>
     autor citation-check [<file>] [--ws <workspace-name>]
     autor plot <prompt> [--ws <workspace-name>] [--name STEM]
     autor ws init <name>
-    autor ws add <name> <paper-refs...> [--search Q] [--topic ID] [--all]
+    autor ws add <name> <paper-refs...> [--search Q] [--all]
     autor ws remove <name> <paper-refs...>
     autor ws list
     autor ws show <name>
-    autor ws search <name> <query> [--top N] [--mode unified|keyword|semantic]
+    autor ws search <name> <query> [--top N]
     autor ws rename <old-name> <new-name>
     autor ws export <name> [-o FILE]
     autor ws export-meta <name> [-o FILE] [--format json|jsonl|csv]
+    autor ws status <name> [--papers]
+    autor ws export-evidence <name> [-o FILE]
+    autor ws screen <name> --criteria TEXT [--target N] [--apply]
+    autor ws plan-package <name> [--title TITLE] [--criteria TEXT]
+    autor ws citation-coverage <name> [--manuscript FILE] [--require retained|citable|must_cite]
+    autor ws citation-network <name> [--min-shared N] [-o FILE]
+    autor ws figure-status <name> [--fail-if-missing]
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
+import re
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -139,11 +144,6 @@ def _resolve_ws_paper_ids(args: argparse.Namespace, cfg) -> set[str] | None:
 # ============================================================================
 
 _INSTALL_HINTS: dict[str, str] = {
-    "sentence_transformers": "pip install autor[embed]",
-    "faiss": "pip install autor[embed]",
-    "numpy": "pip install autor[embed]",
-    "bertopic": "pip install autor[topics]",
-    "pandas": "pip install autor[topics]",
     "endnote_utils": "pip install autor[import]",
     "pyzotero": "pip install autor[import]",
 }
@@ -168,20 +168,79 @@ def _check_import_error(e: ImportError) -> None:
 
 
 def cmd_index(args: argparse.Namespace, cfg) -> None:
-    from autor.index import build_index
+    from autor.index import build_index, build_index_atomic, index_status
 
     papers_dir = cfg.papers_dir
     db_path = cfg.index_db
+
+    if getattr(args, "status", False):
+        status = index_status(db_path)
+        run_dir = cfg._root / ".run"
+        job_file = run_dir / "index-job.json"
+        if job_file.exists():
+            try:
+                job = json.loads(job_file.read_text(encoding="utf-8"))
+                pid = int(job.get("pid") or 0)
+                running = False
+                if pid:
+                    try:
+                        os.kill(pid, 0)
+                        running = True
+                    except OSError:
+                        running = False
+                status["background_job"] = {**job, "running": running}
+            except (OSError, json.JSONDecodeError, ValueError):
+                status["background_job"] = {"status": "unreadable", "path": str(job_file)}
+        ui(json.dumps(status, indent=2, ensure_ascii=False))
+        return
 
     if not papers_dir.exists():
         _log.error("论文目录不存在: %s", papers_dir)
         sys.exit(1)
 
+    if getattr(args, "background", False):
+        run_dir = cfg._root / ".run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_path = run_dir / "index-rebuild.log"
+        job_file = run_dir / "index-job.json"
+        cmd = [sys.executable, "-m", "autor.cli", "index"]
+        if args.rebuild:
+            cmd.append("--rebuild")
+        if getattr(args, "direct", False):
+            cmd.append("--direct")
+        if getattr(args, "tmp_dir", None):
+            cmd.extend(["--tmp-dir", str(args.tmp_dir)])
+        env = os.environ.copy()
+        env["AUTOR_ROOT"] = str(cfg._root)
+        out = log_path.open("ab")
+        proc = subprocess.Popen(cmd, cwd=cfg._root, env=env, stdout=out, stderr=subprocess.STDOUT)
+        out.close()
+        job = {
+            "pid": proc.pid,
+            "command": cmd,
+            "log": str(log_path),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "rebuild": bool(args.rebuild),
+        }
+        job_file.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        ui(f"索引任务已在后台启动: PID {proc.pid}")
+        ui(f"日志: {log_path}")
+        ui("查看状态: autor index --status")
+        return
+
     action = "重建索引" if args.rebuild else "构建索引"
     ui(f"{action}: {papers_dir} -> {db_path}")
-    count = build_index(papers_dir, db_path, rebuild=args.rebuild)
+    if args.rebuild and not getattr(args, "direct", False):
+        count = build_index_atomic(
+            papers_dir,
+            db_path,
+            rebuild=True,
+            temp_dir=Path(args.tmp_dir) if getattr(args, "tmp_dir", None) else None,
+        )
+    else:
+        count = build_index(papers_dir, db_path, rebuild=args.rebuild)
     ui(f"完成：已索引 {count} 篇论文。")
-    ui("下一步：运行 `autor search <关键词>` 或 `autor usearch <关键词>` 开始检索。")
+    ui("下一步：运行 `autor search <关键词>` 查看结果，或 `autor research <问题>` 生成可审计证据包。")
 
 
 def cmd_search_author(args: argparse.Namespace, cfg) -> None:
@@ -313,9 +372,9 @@ def cmd_show(args: argparse.Namespace, cfg) -> None:
     if args.layer == 3:
         conclusion = load_l3(json_path)
         if conclusion is None:
-            _log.error("尚未提取结论。请先运行：autor enrich-l3 %s", args.paper_id)
+            _log.error("尚未生成 L3 结论层。请先运行：autor enrich-l3 %s", args.paper_id)
             sys.exit(1)
-        ui("\n--- 结论 ---\n")
+        ui("\n--- L3 结论层 ---\n")
         ui(conclusion)
         _record_read()
         return
@@ -324,118 +383,47 @@ def cmd_show(args: argparse.Namespace, cfg) -> None:
         if not md_path.exists():
             _log.error("未找到 paper.md：%s", md_path)
             sys.exit(1)
-        lang = getattr(args, "lang", None)
-        if lang:
-            from autor.translate import validate_lang
-
-            try:
-                lang = validate_lang(lang)
-            except ValueError:
-                ui(f"错误: 无效的语言代码 '{lang}'")
-                sys.exit(1)
-            translated_path = md_path.parent / f"paper_{lang}.md"
-            if translated_path.exists():
-                ui(f"\n--- 全文（{lang}） ---\n")
-            else:
-                ui(f"\n--- 全文（原文，paper_{lang}.md 不存在） ---\n")
-        else:
-            ui("\n--- 全文 ---\n")
-        ui(load_l4(md_path, lang=lang))
+        ui("\n--- 全文 ---\n")
+        ui(load_l4(md_path))
         _record_read()
         return
 
 
-def cmd_embed(args: argparse.Namespace, cfg) -> None:
-    try:
-        from autor.vectors import build_vectors
-    except ImportError as e:
-        _check_import_error(e)
-
-    papers_dir = cfg.papers_dir
-    if not papers_dir.exists():
-        _log.error("论文目录不存在: %s", papers_dir)
-        sys.exit(1)
-
-    action = "重建向量索引" if args.rebuild else "更新向量索引"
-    ui(f"{action}: {papers_dir} -> {cfg.index_db}")
-    count = build_vectors(papers_dir, cfg.index_db, rebuild=args.rebuild, cfg=cfg)
-    label = "总计" if args.rebuild else "新增"
-    ui(f"完成：{label} {count} 条向量。")
-    ui("下一步：运行 `autor vsearch <问题>` 或 `autor usearch <问题>` 试试检索效果。")
-
-
-def cmd_vsearch(args: argparse.Namespace, cfg) -> None:
-    import time
-
-    try:
-        from autor.vectors import vsearch
-    except ImportError as e:
-        _check_import_error(e)
-
-    from autor.metrics import get_store
+def cmd_research(args: argparse.Namespace, cfg) -> None:
+    from autor.index import research_bundle
 
     query = " ".join(args.query)
-    t0 = time.monotonic()
+    run_dir = Path(args.run_dir) if args.run_dir else cfg._root / "workspace" / "research-runs" / _safe_run_name(query)
     try:
-        results = vsearch(
+        result = research_bundle(
             query,
             cfg.index_db,
-            top_k=_resolve_top(args, cfg.embed.top_k),
+            run_dir=run_dir,
+            top_k=_resolve_top(args, cfg.search.top_k),
             cfg=cfg,
             year=args.year,
             journal=args.journal,
             paper_type=args.paper_type,
+            neighbors=args.neighbors,
+            max_chars=args.max_chars,
+            per_node_max_chars=args.per_node_max_chars,
         )
     except FileNotFoundError as e:
         _log.error("%s", e)
         sys.exit(1)
 
-    elapsed = time.monotonic() - t0
-    store = get_store()
-    _record_search_metrics(store, "vsearch", query, results, elapsed, args)
-
-    if not results:
-        ui(f'未找到与 "{query}" 相关的结果。')
-        return
-
-    ui(f'语义检索结果（"{query}"，共 {len(results)} 条）\n')
-    for i, r in enumerate(results, start=1):
-        score = r.get("score", 0.0)
-        _print_search_result(i, r, extra=f"分数: {score:.3f}")
-    _print_search_next_steps()
+    paths = result.get("paths", {})
+    verify = result.get("verify", {})
+    if paths:
+        ui(f"证据包已生成: {paths.get('round_bundle_md')}")
+        ui(f"trace: {paths.get('trace')}")
+        ui(f"verify: {paths.get('verify')}")
+    ui(f"验证: ok={verify.get('ok')} evidence={verify.get('evidence_count')} budget_exhausted={verify.get('budget_exhausted')}")
 
 
-def cmd_usearch(args: argparse.Namespace, cfg) -> None:
-    import time
-
-    from autor.index import unified_search
-    from autor.metrics import get_store
-
-    query = " ".join(args.query)
-    t0 = time.monotonic()
-    results = unified_search(
-        query,
-        cfg.index_db,
-        top_k=_resolve_top(args, cfg.search.top_k),
-        cfg=cfg,
-        year=args.year,
-        journal=args.journal,
-        paper_type=args.paper_type,
-    )
-    elapsed = time.monotonic() - t0
-    store = get_store()
-    _record_search_metrics(store, "usearch", query, results, elapsed, args)
-
-    if not results:
-        ui(f'未找到与 "{query}" 相关的结果。')
-        return
-
-    ui(f'融合检索结果（"{query}"，共 {len(results)} 条）\n')
-    for i, r in enumerate(results, start=1):
-        score = r.get("score", 0.0)
-        match = r.get("match", "?")
-        _print_search_result(i, r, extra=f"{_format_match_tag(match)} {score:.3f}")
-    _print_search_next_steps()
+def _safe_run_name(query: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9\u3400-\u9fff]+", "-", query.strip()).strip("-")
+    return (stem[:48] or "query").lower()
 
 
 def cmd_audit(args: argparse.Namespace, cfg) -> None:
@@ -617,8 +605,9 @@ def cmd_pipeline(args: argparse.Namespace, cfg) -> None:
         "max_retries": args.max_retries,
         "rebuild": args.rebuild,
     }
-    if args.workspace_filter:
-        opts["workspace_filter"] = args.workspace_filter
+    workspace_filter = getattr(args, "workspace_filter", None)
+    if workspace_filter:
+        opts["workspace_filter"] = workspace_filter
     if args.inbox:
         opts["inbox_dir"] = Path(args.inbox).resolve()
     if args.papers:
@@ -635,10 +624,29 @@ def cmd_enrich_l3(args: argparse.Namespace, cfg) -> None:
 
     if args.all:
         targets = sorted(d / "meta.json" for d in iter_paper_dirs(papers_dir))
+    elif getattr(args, "workspace", None):
+        from autor import workspace as workspace_mod
+
+        if not workspace_mod.validate_workspace_name(args.workspace):
+            ui(f"非法工作区名称: {args.workspace}")
+            return
+        ws_dir = cfg._root / "workspace" / args.workspace
+        dir_names = workspace_mod.read_dir_names(ws_dir, cfg.index_db)
+        targets = sorted(papers_dir / name / "meta.json" for name in dir_names)
+        if getattr(args, "only_missing", False):
+            filtered = []
+            for jp in targets:
+                try:
+                    meta = read_meta(jp.parent)
+                except (ValueError, FileNotFoundError):
+                    continue
+                if not meta.get("l3"):
+                    filtered.append(jp)
+            targets = filtered
     elif args.paper_id:
         targets = [papers_dir / args.paper_id / "meta.json"]
     else:
-        _log.error("请指定 <paper-id> 或 --all")
+        _log.error("请指定 <paper-id>、--workspace 或 --all")
         sys.exit(1)
 
     ok = fail = skip = 0
@@ -668,7 +676,7 @@ def cmd_enrich_l3(args: argparse.Namespace, cfg) -> None:
             reason = meta.get("l3_last_attempt_reason") or "未知原因"
             ui(f"  失败 [{stage}/{status}]: {reason}")
 
-    if args.all or len(targets) > 1:
+    if args.all or getattr(args, "workspace", None) or len(targets) > 1:
         ui(f"\n完成: {ok} 成功 | {fail} 失败 | {skip} 跳过")
 
 
@@ -792,46 +800,6 @@ def cmd_shared_refs(args: argparse.Namespace, cfg) -> None:
         ui()
 
 
-def cmd_translate(args: argparse.Namespace, cfg) -> None:
-    from autor.translate import batch_translate, translate_paper
-
-    papers_dir = cfg.papers_dir
-
-    # Determine target language: CLI flag > config default; normalize input
-    target_lang = (args.lang or cfg.translate.target_lang).lower().strip()
-
-    try:
-        from autor.translate import validate_lang
-
-        validate_lang(target_lang)
-    except ValueError:
-        ui(f"错误: 无效的语言代码 '{target_lang}'（应为 2-5 个小写字母，如 zh、en、ja）")
-        sys.exit(1)
-
-    if args.paper_id:
-        paper_d = _resolve_paper(args.paper_id, cfg)
-        tr = translate_paper(paper_d, cfg, target_lang=target_lang, force=args.force)
-        if tr.ok:
-            ui(f"翻译完成: {tr.path}")
-        else:
-            from autor.translate import SKIP_ALREADY_EXISTS, SKIP_EMPTY, SKIP_NO_MD, SKIP_SAME_LANG
-
-            _skip_messages = {
-                SKIP_NO_MD: "跳过: 该论文目录下无 paper.md 文件",
-                SKIP_EMPTY: "跳过: paper.md 内容为空",
-                SKIP_SAME_LANG: f"跳过: 论文已是目标语言 ({target_lang})",
-                SKIP_ALREADY_EXISTS: "跳过: 翻译已存在（使用 --force 强制重新翻译）",
-            }
-            ui(_skip_messages.get(tr.skip_reason, "跳过"))
-    elif args.all:
-        ui(f"批量翻译 → {target_lang}")
-        stats = batch_translate(papers_dir, cfg, target_lang=target_lang, force=args.force)
-        ui(f"完成: {stats['translated']} 已翻译 | {stats['skipped']} 跳过 | {stats['failed']} 失败")
-    else:
-        ui("请指定 <paper-id> 或 --all")
-        sys.exit(1)
-
-
 def cmd_refetch(args: argparse.Namespace, cfg) -> None:
     import json
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -841,16 +809,44 @@ def cmd_refetch(args: argparse.Namespace, cfg) -> None:
 
     papers_dir = cfg.papers_dir
 
-    if args.all:
+    if getattr(args, "workspace", None):
+        from autor import workspace as workspace_mod
+
+        if not workspace_mod.validate_workspace_name(args.workspace):
+            _log.error("非法工作区名称: %s", args.workspace)
+            sys.exit(1)
+        ws_dir = cfg._root / "workspace" / args.workspace
+        if not ws_dir.exists():
+            _log.error("工作区不存在: %s", args.workspace)
+            sys.exit(1)
+        targets = []
+        for entry in workspace_mod.read_entries(ws_dir):
+            dir_name = entry.get("dir_name", "")
+            jp = papers_dir / dir_name / "meta.json"
+            if jp.exists():
+                targets.append(jp)
+            else:
+                try:
+                    record = workspace_mod.show(ws_dir, cfg.index_db)
+                except Exception:
+                    record = []
+                refreshed = next((r for r in record if r.get("id") == entry.get("id")), {})
+                if refreshed.get("dir_name"):
+                    targets.append(papers_dir / refreshed["dir_name"] / "meta.json")
+        targets = sorted(set(targets))
+    elif args.all:
         targets = sorted(d / "meta.json" for d in iter_paper_dirs(papers_dir))
     elif args.paper_id:
-        targets = [papers_dir / args.paper_id / "meta.json"]
+        try:
+            targets = [_resolve_paper(args.paper_id, cfg) / "meta.json"]
+        except SystemExit:
+            targets = [papers_dir / args.paper_id / "meta.json"]
     else:
-        _log.error("请指定 <paper-id> 或 --all")
+        _log.error("请指定 <paper-id>、--workspace 或 --all")
         sys.exit(1)
 
     # Filter: only papers missing citations or bibliographic details (unless --force)
-    if args.all and not args.force:
+    if (args.all or getattr(args, "workspace", None)) and not args.force:
         filtered = []
         for jp in targets:
             data = json.loads(jp.read_text(encoding="utf-8"))
@@ -858,9 +854,11 @@ def cmd_refetch(args: argparse.Namespace, cfg) -> None:
                 continue
             missing_cite = not data.get("citation_count")
             missing_bib = not all(data.get(k) for k in ("volume", "publisher"))
-            if missing_cite or missing_bib:
+            missing_refs = not data.get("references")
+            if missing_cite or missing_bib or missing_refs:
                 filtered.append(jp)
-        ui(f"共 {len(targets)} 篇，{len(filtered)} 篇需要补全")
+        scope = f"工作区 {args.workspace}" if getattr(args, "workspace", None) else "全库"
+        ui(f"{scope}共 {len(targets)} 篇，{len(filtered)} 篇需要补全")
         targets = filtered
 
     if not targets:
@@ -910,155 +908,6 @@ def cmd_refetch(args: argparse.Namespace, cfg) -> None:
     ui(f"\n完成: {ok} 更新 | {skip} 无变化 | {fail} 失败")
 
 
-def _write_all_viz(model, viz_dir: Path) -> None:
-    """Write 6 BERTopic HTML visualizations to *viz_dir*."""
-    from autor.topics import (
-        visualize_barchart,
-        visualize_heatmap,
-        visualize_term_rank,
-        visualize_topic_hierarchy,
-        visualize_topics_2d,
-        visualize_topics_over_time,
-    )
-
-    viz_dir.mkdir(parents=True, exist_ok=True)
-    _log.debug("generating visualizations")
-
-    charts = [
-        ("topics_2d", "2D scatter", visualize_topics_2d),
-        ("barchart", "Keywords  ", visualize_barchart),
-        ("hierarchy", "Hierarchy ", visualize_topic_hierarchy),
-        ("heatmap", "Heatmap   ", visualize_heatmap),
-        ("term_rank", "Term rank ", visualize_term_rank),
-    ]
-    for fname, label, func in charts:
-        html = func(model)
-        (viz_dir / f"{fname}.html").write_text(html, encoding="utf-8")
-        ui(f"  {label} -> {viz_dir / f'{fname}.html'}")
-
-    try:
-        html = visualize_topics_over_time(model)
-        (viz_dir / "topics_over_time.html").write_text(html, encoding="utf-8")
-        ui(f"  Over time  -> {viz_dir / 'topics_over_time.html'}")
-    except Exception as e:
-        _log.error("Topics-over-time failed: %s", e)
-
-
-def cmd_topics(args: argparse.Namespace, cfg) -> None:
-    try:
-        from autor.topics import (
-            build_topics,
-            get_outliers,
-            get_topic_overview,
-            get_topic_papers,
-            load_model,
-            reduce_topics_to,
-        )
-    except ImportError as e:
-        _check_import_error(e)
-
-    model_dir = cfg.topics_model_dir
-
-    # Resolve nr_topics: CLI --nr-topics overrides config
-    def _resolve_nr_topics():
-        raw = args.nr_topics if args.nr_topics is not None else cfg.topics.nr_topics
-        return {0: "auto", -1: None}.get(raw, raw)
-
-    if args.build or args.rebuild:
-        min_ts = args.min_topic_size if args.min_topic_size is not None else cfg.topics.min_topic_size
-        ui(f"{'重建' if args.rebuild else '构建'}主题模型...")
-        model = build_topics(
-            cfg.index_db,
-            cfg.papers_dir,
-            min_topic_size=min_ts,
-            nr_topics=_resolve_nr_topics(),
-            save_path=model_dir,
-            cfg=cfg,
-        )
-    else:
-        try:
-            model = load_model(model_dir)
-        except FileNotFoundError as e:
-            _log.error("%s", e)
-            sys.exit(1)
-
-    # Quick reduce (no rebuild)
-    if args.reduce is not None:
-        ui(f"正在压缩到 {args.reduce} 个主题...")
-        model = reduce_topics_to(model, args.reduce, save_path=model_dir, cfg=cfg)
-
-    # Manual merge
-    if args.merge:
-        from autor.topics import merge_topics_by_ids
-
-        # Parse "1,6,14+3,5" → [[1,6,14],[3,5]]
-        groups = []
-        for group_str in args.merge.split("+"):
-            ids = [int(x.strip()) for x in group_str.split(",") if x.strip()]
-            if len(ids) >= 2:
-                groups.append(ids)
-        if groups:
-            ui(f"正在合并 {len(groups)} 组主题: {groups}")
-            model = merge_topics_by_ids(model, groups, save_path=model_dir, cfg=cfg)
-        else:
-            _log.error("--merge 格式错误，示例: --merge 1,6,14+3,5")
-
-    # Show specific topic
-    if args.topic is not None:
-        tid = args.topic
-        top_n = args.top or 0  # 0 = show all
-        if tid == -1:
-            papers = get_outliers(model)
-            ui(f"离群论文: {len(papers)}\n")
-        else:
-            topic_words = model.get_topic(tid)
-            if topic_words is False or topic_words is None:
-                _log.error("主题 %d 不存在", tid)
-                sys.exit(1)
-            keywords = [w for w, _ in topic_words[:10]]
-            papers = get_topic_papers(model, tid)
-            ui(f"主题 {tid}: {', '.join(keywords)}")
-            ui(f"{len(papers)} 篇论文\n")
-
-        if top_n:
-            papers = papers[:top_n]
-        for i, p in enumerate(papers, 1):
-            cc = p.get("citation_count", {})
-            best = max((v for v in (cc or {}).values() if isinstance(v, (int, float))), default=0)
-            cite_str = f"  [被引: {best}]" if best else ""
-            authors = p.get("authors", "")
-            first_author = authors.split(",")[0].strip() if authors else ""
-            ui(f"  {i:2d}. [{p.get('year', '?')}] {p.get('title', p['paper_id'])}")
-            ui(f"      {first_author} | {p.get('journal', '')}{cite_str}")
-        return
-
-    # Generate visualizations (6 charts, same as explore)
-    if args.viz:
-        _write_all_viz(model, model_dir / "viz")
-        return
-
-    # Default: show overview
-    overview = get_topic_overview(model)
-    if not overview:
-        ui("没有可用主题。可尝试减小 topics.min_topic_size 或增加论文数量。")
-        return
-
-    outliers = get_outliers(model)
-    total = sum(t["count"] for t in overview) + len(outliers)
-    ui(f"论文库概览：{total} 篇论文，{len(overview)} 个主题，{len(outliers)} 篇离群论文\n")
-
-    for t in overview:
-        kw = ", ".join(t["keywords"][:6])
-        ui(f"主题 {t['topic_id']:2d}（{t['count']:3d} 篇）: {kw}")
-        for p in t["representative_papers"][:3]:
-            year = p.get("year", "?")
-            title = p.get("title", "")
-            if len(title) > 70:
-                title = title[:67] + "..."
-            ui(f"    [{year}] {title}")
-        ui()
-
-
 def cmd_backfill_abstract(args: argparse.Namespace, cfg) -> None:
     from autor.ingest.metadata import backfill_abstracts
 
@@ -1077,7 +926,7 @@ def cmd_backfill_abstract(args: argparse.Namespace, cfg) -> None:
         parts.insert(1, f"{stats['updated']} 已更新为官方摘要")
     ui(f"\n完成: {' | '.join(parts)}")
     if stats["filled"] and not args.dry_run:
-        _log.debug("consider rebuilding vector index: autor embed --rebuild")
+        _log.debug("consider rebuilding evidence index: autor index --rebuild")
 
 
 def cmd_explore(args: argparse.Namespace, cfg) -> None:
@@ -1121,103 +970,12 @@ def cmd_explore(args: argparse.Namespace, cfg) -> None:
         )
         ui(f"\n已抓取 {total} 篇论文")
 
-    elif action == "embed":
-        try:
-            from autor.explore import build_explore_vectors
-        except ImportError as e:
-            _check_import_error(e)
-        n = build_explore_vectors(args.name, rebuild=args.rebuild, cfg=cfg)
-        ui(f"完成: 新增 {n} 条向量嵌入")
-
-    elif action == "topics":
-        try:
-            from autor.explore import _explore_dir, build_explore_topics
-        except ImportError as e:
-            _check_import_error(e)
-        try:
-            from autor.topics import get_topic_overview, get_topic_papers, load_model
-        except ImportError as e:
-            _check_import_error(e)
-
-        model_dir = _explore_dir(args.name, cfg) / "topic_model"
-
-        if args.build or args.rebuild:
-            nr_topics = args.nr_topics
-            info = build_explore_topics(
-                args.name,
-                rebuild=args.rebuild,
-                min_topic_size=args.min_topic_size or 30,
-                nr_topics=nr_topics,
-                cfg=cfg,
-            )
-            ui(f"\n聚类完成: {info['n_topics']} 个主题，{info['n_outliers']} 篇离群论文，{info['n_papers']} 篇论文")
-
-        try:
-            model = load_model(model_dir)
-        except FileNotFoundError:
-            ui("尚未构建主题模型。请先运行 autor explore topics --name <name> --build。")
-            return
-
-        if args.topic is not None:
-            papers = get_topic_papers(model, args.topic)
-            top_n = _resolve_top(args, 20)
-            papers = papers[:top_n]
-            ui(f"主题 {args.topic}: {len(papers)} 篇论文\n")
-            for i, p in enumerate(papers, 1):
-                cc = p.get("citation_count", {})
-                best = max((v for v in (cc or {}).values() if isinstance(v, (int, float))), default=0)
-                cite_str = f"  [被引: {best}]" if best else ""
-                authors = p.get("authors", "")
-                first_author = authors.split(",")[0].strip() if authors else ""
-                title = p.get("title", "")
-                if len(title) > 70:
-                    title = title[:67] + "..."
-                ui(f"  {i:3d}. [{p.get('year', '?')}] {title}")
-                ui(f"       {first_author} | {p.get('paper_id', '')}{cite_str}")
-            return
-
-        overview = get_topic_overview(model)
-        if not overview:
-            ui("没有可用主题。请先运行 autor explore topics --name <name> --build。")
-            return
-        from autor.topics import get_outliers
-
-        outliers = get_outliers(model)
-        total = sum(t["count"] for t in overview) + len(outliers)
-        ui(f"\n{len(overview)} 个主题，{total} 篇论文，{len(outliers)} 篇离群论文\n")
-        for t in overview:
-            kw = ", ".join(t["keywords"][:6])
-            ui(f"主题 {t['topic_id']:2d}（{t['count']:3d} 篇）: {kw}")
-            for p in t["representative_papers"][:3]:
-                title = p.get("title", "")
-                if len(title) > 65:
-                    title = title[:62] + "..."
-                cc = p.get("citation_count", {})
-                best = max((v for v in (cc or {}).values() if isinstance(v, (int, float))), default=0)
-                cite_str = f"  [被引: {best}]" if best else ""
-                ui(f"    [{p.get('year', '?')}] {title}{cite_str}")
-            ui()
-
     elif action == "search":
         query = " ".join(args.query)
-        mode = getattr(args, "mode", "semantic") or "semantic"
         top_k = _resolve_top(args, 10)
-        if mode == "keyword":
-            from autor.explore import explore_search
+        from autor.explore import explore_search
 
-            results = explore_search(args.name, query, top_k=top_k, cfg=cfg)
-        elif mode == "unified":
-            try:
-                from autor.explore import explore_unified_search
-            except ImportError as e:
-                _check_import_error(e)
-            results = explore_unified_search(args.name, query, top_k=top_k, cfg=cfg)
-        else:
-            try:
-                from autor.explore import explore_vsearch
-            except ImportError as e:
-                _check_import_error(e)
-            results = explore_vsearch(args.name, query, top_k=top_k, cfg=cfg)
+        results = explore_search(args.name, query, top_k=top_k, cfg=cfg)
         if not results:
             ui("未找到结果。")
             return
@@ -1229,20 +987,6 @@ def cmd_explore(args: argparse.Namespace, cfg) -> None:
             ui(f"[{i}] [{r.get('year', '?')}] {r.get('title', '')}")
             ui(f"     {first} | {r.get('doi', '')}  (分数: {r['score']:.3f}){cite_str}")
             ui()
-
-    elif action == "viz":
-        try:
-            from autor.explore import _explore_dir
-            from autor.topics import load_model
-        except ImportError as e:
-            _check_import_error(e)
-        model_dir = _explore_dir(args.name, cfg) / "topic_model"
-        try:
-            model = load_model(model_dir)
-        except FileNotFoundError:
-            ui("尚未构建主题模型。请先运行 autor explore topics --name <name> --build。")
-            return
-        _write_all_viz(model, model_dir / "viz")
 
     elif action == "list":
         import json as _json
@@ -1264,8 +1008,6 @@ def cmd_explore(args: argparse.Namespace, cfg) -> None:
                 query = meta.get("query", {})
                 if query:
                     qinfo = ", ".join(f"{k}={v}" for k, v in query.items())
-                elif meta.get("issn"):
-                    qinfo = f"ISSN {meta['issn']}"
                 else:
                     qinfo = "?"
                 ui(f"  {d.name}: {meta.get('count', '?')} 篇 ({qinfo}，抓取时间 {meta.get('fetched_at', '?')})")
@@ -1290,12 +1032,9 @@ def cmd_explore(args: argparse.Namespace, cfg) -> None:
                     except (OSError, _json.JSONDecodeError) as e:
                         ui(f"  {d.name}: meta.json 读取失败，已跳过（{e}）")
                         continue
-                    # Show query info (backward compatible with old ISSN-only format)
                     query = meta.get("query", {})
                     if query:
                         qinfo = ", ".join(f"{k}={v}" for k, v in query.items())
-                    elif meta.get("issn"):
-                        qinfo = f"ISSN {meta['issn']}"
                     else:
                         qinfo = "?"
                     ui(f"  {d.name}: {meta.get('count', '?')} 篇 ({qinfo}，抓取时间 {meta.get('fetched_at', '?')})")
@@ -1685,7 +1424,23 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
 
     # Validate workspace-name style arguments in CLI layer to prevent path traversal.
     names_to_check: list[str] = []
-    if action in {"init", "add", "remove", "show", "search", "export", "export-meta", "dedup"}:
+    if action in {
+        "init",
+        "add",
+        "remove",
+        "show",
+        "search",
+        "export",
+        "export-meta",
+        "export-evidence",
+        "status",
+        "screen",
+        "plan-package",
+        "citation-coverage",
+        "citation-network",
+        "figure-status",
+        "dedup",
+    }:
         names_to_check.append(args.name)
     elif action == "rename":
         names_to_check.extend([args.old_name, args.new_name])
@@ -1745,25 +1500,10 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
             for e in added:
                 ui(f"  + {e['dir_name']}")
             return
-        elif args.add_topic is not None:
-            from autor.topics import get_topic_papers, load_model
-
-            try:
-                model = load_model(cfg.topics_model_dir)
-            except (FileNotFoundError, ImportError) as e:
-                ui(f"无法加载主题模型: {e}")
-                ui("请先运行: autor topics --build")
-                return
-            papers = get_topic_papers(model, args.add_topic)
-            if not papers:
-                ui(f"主题 {args.add_topic} 中没有论文")
-                return
-            paper_refs = [p["paper_id"] for p in papers]
-            ui(f"主题 {args.add_topic}: 找到 {len(paper_refs)} 篇论文")
         elif args.add_search is not None:
-            from autor.index import unified_search
+            from autor.index import search
 
-            results = unified_search(
+            results = search(
                 args.add_search,
                 cfg.index_db,
                 top_k=_resolve_top(args, cfg.search.top_k),
@@ -1839,6 +1579,11 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
         for i, p in enumerate(papers, 1):
             ui(f"  {i:3d}. {p['dir_name']}")
 
+    elif action == "status":
+        ws_dir = ws_root / args.name
+        payload = workspace.status(ws_dir, cfg.papers_dir, cfg.index_db, include_papers=args.papers)
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+
     elif action == "export-meta":
         ws_dir = ws_root / args.name
         rows = workspace.export_metadata(ws_dir, cfg.papers_dir, cfg.index_db)
@@ -1858,6 +1603,104 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
         else:
             print(payload, end="")
 
+    elif action == "export-evidence":
+        ws_dir = ws_root / args.name
+        rows = workspace.export_evidence(ws_dir, cfg.papers_dir, cfg.index_db)
+        payload = json.dumps(rows, indent=2, ensure_ascii=False) + "\n"
+        if args.output:
+            out = Path(args.output)
+            out.write_text(payload, encoding="utf-8")
+            ui(f"已导出到 {out}（{len(rows)} 篇，evidence json）")
+        else:
+            print(payload, end="")
+
+    elif action == "screen":
+        ws_dir = ws_root / args.name
+        criteria = args.criteria or ""
+        if args.criteria_file:
+            criteria = Path(args.criteria_file).read_text(encoding="utf-8")
+        if not criteria.strip():
+            ui("请提供 --criteria 或 --criteria-file")
+            return
+        result = workspace.screen(
+            ws_dir,
+            cfg.papers_dir,
+            cfg.index_db,
+            criteria=criteria,
+            target_count=args.target,
+            apply=args.apply,
+        )
+        payload = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+        if args.output:
+            out = Path(args.output)
+            out.write_text(payload, encoding="utf-8")
+            ui(f"筛选结果已写入: {out}")
+        else:
+            print(payload, end="")
+
+    elif action == "plan-package":
+        ws_dir = ws_root / args.name
+        criteria = args.criteria or ""
+        if args.criteria_file:
+            criteria = Path(args.criteria_file).read_text(encoding="utf-8")
+        result = workspace.generate_planning_package(
+            ws_dir,
+            cfg.papers_dir,
+            cfg.index_db,
+            title=args.title,
+            criteria=criteria,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    elif action == "citation-coverage":
+        ws_dir = ws_root / args.name
+        manuscript = Path(args.manuscript) if args.manuscript else None
+        result = workspace.citation_coverage(ws_dir, manuscript, require=args.require)
+        payload = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+        if args.output:
+            out = Path(args.output)
+            out.write_text(payload, encoding="utf-8")
+            ui(f"引用覆盖检查已写入: {out}")
+        else:
+            print(payload, end="")
+        if args.fail_if_missing and (result["missing_required_count"] or result["unknown_citekeys"]):
+            raise SystemExit(2)
+
+    elif action == "citation-network":
+        ws_dir = ws_root / args.name
+        result = workspace.citation_network(ws_dir, cfg.index_db, min_shared=args.min_shared)
+        payload = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+        if args.output:
+            out = Path(args.output)
+        else:
+            out = ws_dir / "sidecars" / "citation-network.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(payload, encoding="utf-8")
+        ui(f"引用网络已写入: {out}")
+        ui(
+            "状态: {status} | 参考边 {edges} | 库内边 {internal} | 共引节点 {shared}".format(
+                status=result["status"],
+                edges=result["summary"]["reference_edge_count"],
+                internal=result["summary"]["internal_edge_count"],
+                shared=result["summary"]["shared_reference_count"],
+            )
+        )
+        if args.print_json:
+            print(payload, end="")
+
+    elif action == "figure-status":
+        ws_dir = ws_root / args.name
+        result = workspace.figure_status(ws_dir)
+        payload = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+        if args.output:
+            out = Path(args.output)
+            out.write_text(payload, encoding="utf-8")
+            ui(f"图片检查已写入: {out}")
+        else:
+            print(payload, end="")
+        if args.fail_if_missing and result["missing_count"]:
+            raise SystemExit(2)
+
     elif action == "search":
         ws_dir = ws_root / args.name
         pids = workspace.read_paper_ids(ws_dir)
@@ -1865,48 +1708,20 @@ def cmd_ws(args: argparse.Namespace, cfg) -> None:
             ui("工作区为空")
             return
         query = " ".join(args.query)
-        mode = getattr(args, "mode", "unified")
         top_k = _resolve_top(args, cfg.search.top_k)
 
-        if mode == "keyword":
-            from autor.index import search as kw_search
+        from autor.index import search as kw_search
 
-            results = kw_search(
-                query,
-                cfg.index_db,
-                top_k=top_k,
-                cfg=cfg,
-                year=args.year,
-                journal=args.journal,
-                paper_type=args.paper_type,
-                paper_ids=pids,
-            )
-        elif mode == "semantic":
-            from autor.vectors import vsearch
-
-            results = vsearch(
-                query,
-                cfg.index_db,
-                top_k=top_k,
-                cfg=cfg,
-                year=args.year,
-                journal=args.journal,
-                paper_type=args.paper_type,
-                paper_ids=pids,
-            )
-        else:
-            from autor.index import unified_search
-
-            results = unified_search(
-                query,
-                cfg.index_db,
-                top_k=top_k,
-                cfg=cfg,
-                year=args.year,
-                journal=args.journal,
-                paper_type=args.paper_type,
-                paper_ids=pids,
-            )
+        results = kw_search(
+            query,
+            cfg.index_db,
+            top_k=top_k,
+            cfg=cfg,
+            year=args.year,
+            journal=args.journal,
+            paper_type=args.paper_type,
+            paper_ids=pids,
+        )
 
         if not results:
             ui(f'工作区 {args.name} 中未找到 "{query}" 的结果')
@@ -2003,10 +1818,10 @@ def cmd_fsearch(args: argparse.Namespace, cfg) -> None:
                 ui("  主库索引不存在，请先运行 autor index")
                 results = []
             else:
-                from autor.index import unified_search
+                from autor.index import search
 
                 try:
-                    results = unified_search(query, cfg.index_db, top_k=top_k, cfg=cfg)
+                    results = search(query, cfg.index_db, top_k=top_k, cfg=cfg)
                 except Exception as e:
                     ui(f"  主库搜索失败：{e}")
                     results = []
@@ -2039,7 +1854,7 @@ def cmd_fsearch(args: argparse.Namespace, cfg) -> None:
 
             for name in names:
                 ui(f"── [explore: {name}] ──")
-                from autor.explore import explore_db_path, explore_unified_search
+                from autor.explore import explore_db_path, explore_search
 
                 db = explore_db_path(name, cfg)
                 if not db.exists():
@@ -2047,7 +1862,7 @@ def cmd_fsearch(args: argparse.Namespace, cfg) -> None:
                     ui()
                     continue
                 try:
-                    results = explore_unified_search(name, query, top_k=top_k, cfg=cfg)
+                    results = explore_search(name, query, top_k=top_k, cfg=cfg)
                 except Exception as e:
                     ui(f"  搜索失败: {e}")
                     ui()
@@ -2259,7 +2074,7 @@ def cmd_insights(args: argparse.Namespace, cfg) -> None:
         ui("  暂无阅读记录")
     ui()
 
-    # 4. Recommend semantically adjacent papers not yet read (based on last 7 days of reads)
+    # 4. Recommend adjacent papers not yet read (based on recent title/abstract terms)
     ui("【推荐：你可能还没读过的邻近论文】")
     recent_since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     recent_reads = store.query(category="read", since=recent_since, limit=500)
@@ -2279,7 +2094,7 @@ def cmd_insights(args: argparse.Namespace, cfg) -> None:
         # are not mistakenly recommended as "not yet read".
         all_read_pids = store.query_distinct_names("read")
         try:
-            from autor.vectors import vsearch
+            from autor.index import search as evidence_search
 
             candidate_scores: dict[str, float] = {}
             for pid in recent_paper_ids[:5]:  # limit to avoid slow search
@@ -2297,7 +2112,7 @@ def cmd_insights(args: argparse.Namespace, cfg) -> None:
                 except Exception:
                     continue
                 try:
-                    neighbors = vsearch(query_text, cfg.index_db, top_k=10, cfg=cfg)
+                    neighbors = evidence_search(query_text, cfg.index_db, top_k=10, cfg=cfg)
                 except Exception:
                     continue
                 for r in neighbors:
@@ -2321,9 +2136,9 @@ def cmd_insights(args: argparse.Namespace, cfg) -> None:
                     label = title[:60] if title else pid
                     ui(f"  {rank}. {label}  (分数: {score:.3f})")
             else:
-                ui("  未找到合适的邻近论文（可能向量索引未建立）")
+                ui("  未找到合适的邻近论文")
         except ImportError:
-            ui("  语义搜索不可用（需安装 embed 依赖）")
+            ui("  检索模块不可用")
     ui()
 
     # 5. Active workspaces — list workspaces with paper counts
@@ -2662,7 +2477,7 @@ def cmd_attach_pdf(args: argparse.Namespace, cfg) -> None:
         ui(f"[dry-run] 目标 paper.md: {paper_d / 'paper.md'}")
         if existing_md.exists():
             ui("[dry-run] 警告：已有 paper.md，实际运行时将被覆盖")
-        ui("[dry-run] 将执行: MinerU 转换 → 摘要补全 → 重新嵌入 → 重建索引")
+        ui("[dry-run] 将执行: MinerU 转换 → 摘要补全 → L3 结论提取 → 更新 FTS5 索引")
         ui("[dry-run] 如确认无误，去掉 --dry-run 参数再运行")
         return
 
@@ -2675,7 +2490,7 @@ def cmd_attach_pdf(args: argparse.Namespace, cfg) -> None:
     ui(f"已复制 PDF: {dest_pdf.name}")
 
     # Convert PDF → markdown via MinerU
-    from autor.ingest.mineru import ConvertOptions, check_server, convert_pdf
+    from autor.ingest.mineru import ConvertOptions, check_server, convert_pdf, strip_markdown_images
 
     mineru_opts = ConvertOptions(
         api_url=cfg.ingest.mineru_endpoint,
@@ -2713,18 +2528,16 @@ def cmd_attach_pdf(args: argparse.Namespace, cfg) -> None:
         if existing_md.exists():
             existing_md.unlink()
         shutil.move(str(result.md_path), str(existing_md))
+    if existing_md.exists():
+        existing_md.write_text(strip_markdown_images(existing_md.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
 
-    # Clean up MinerU artifacts (keep images/)
+    # Clean up MinerU artifacts; images are not retained.
     for pattern in ["*_layout.json", "*_content_list.json", "*_origin.pdf"]:
         for f in paper_d.glob(pattern):
             f.unlink(missing_ok=True)
-    # Rename MinerU images dir if needed
-    for img_dir in paper_d.glob("*_images"):
-        if img_dir.name != "images" and img_dir.is_dir():
-            target = paper_d / "images"
-            if target.exists():
-                shutil.rmtree(target)
-            img_dir.rename(target)
+    for img_dir in list(paper_d.glob("*_images")) + list(paper_d.glob("*_mineru_images")) + [paper_d / "images"]:
+        if img_dir.is_dir():
+            shutil.rmtree(img_dir)
 
     # Clean up the copied PDF (we only need the markdown)
     if dest_pdf.exists() and dest_pdf.name != "paper.pdf":
@@ -2745,10 +2558,10 @@ def cmd_attach_pdf(args: argparse.Namespace, cfg) -> None:
             write_meta(paper_d, data)
             ui(f"abstract 已补全 ({len(abstract)} chars)")
 
-    # Incremental re-embed + re-index
-    from autor.ingest.pipeline import step_embed, step_index
+    # L3 generation and incremental node-level FTS5 update.
+    from autor.ingest.pipeline import step_index, step_l3
 
-    step_embed(cfg.papers_dir, cfg, {"dry_run": False, "rebuild": False})
+    step_l3(paper_d / "meta.json", cfg, {"dry_run": False, "force": False, "inspect": False, "max_retries": 2})
     step_index(cfg.papers_dir, cfg, {"dry_run": False, "rebuild": False})
 
 
@@ -2779,9 +2592,9 @@ def _print_search_next_steps(include_ws_add: bool = True) -> None:
 
 def _format_match_tag(match: str) -> str:
     mapping = {
-        "both": "关键词+语义",
-        "fts": "关键词",
-        "vec": "语义",
+        "both": "可审计",
+        "fts": "可审计",
+        "vec": "已废弃",
     }
     return mapping.get(match, match)
 
@@ -2940,9 +2753,13 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- index ---
-    p_index = sub.add_parser("index", help="构建 FTS5 检索索引")
+    p_index = sub.add_parser("index", help="构建节点级 FTS5 证据索引")
     p_index.set_defaults(func=cmd_index)
     p_index.add_argument("--rebuild", action="store_true", help="清空后重建")
+    p_index.add_argument("--status", action="store_true", help="查看索引健康状态，不执行构建")
+    p_index.add_argument("--background", action="store_true", help="后台执行索引构建")
+    p_index.add_argument("--direct", action="store_true", help="重建时直接写目标 index.db，不使用临时库")
+    p_index.add_argument("--tmp-dir", type=str, default=None, help="重建时使用的临时目录")
 
     # --- search ---
     p_search = sub.add_parser("search", help="关键词检索")
@@ -2967,9 +2784,8 @@ def main() -> None:
         type=int,
         default=2,
         choices=[1, 2, 3, 4],
-        help="加载层级：1=元数据, 2=摘要, 3=结论, 4=全文（默认 2）",
+        help="加载层级：1=元数据, 2=摘要, 3=L3 结论层, 4=全文（默认 2）",
     )
-    p_show.add_argument("--lang", type=str, default=None, help="加载翻译版本（如 zh），仅 L4 生效")
     p_show.add_argument(
         "--append-notes",
         type=str,
@@ -2978,24 +2794,16 @@ def main() -> None:
         help="向论文笔记 notes.md 追加内容（T2 层，跨会话复用）",
     )
 
-    # --- embed ---
-    p_embed = sub.add_parser("embed", help="生成语义向量写入 index.db")
-    p_embed.set_defaults(func=cmd_embed)
-    p_embed.add_argument("--rebuild", action="store_true", help="清空后重建")
-
-    # --- vsearch ---
-    p_vsearch = sub.add_parser("vsearch", help="语义向量检索")
-    p_vsearch.set_defaults(func=cmd_vsearch)
-    p_vsearch.add_argument("query", nargs="+", help="检索词")
-    p_vsearch.add_argument("--top", type=int, default=None, help="最多返回 N 条（默认读 config embed.top_k）")
-    _add_filter_args(p_vsearch)
-
-    # --- usearch (unified) ---
-    p_usearch = sub.add_parser("usearch", help="融合检索（关键词 + 语义向量）")
-    p_usearch.set_defaults(func=cmd_usearch)
-    p_usearch.add_argument("query", nargs="+", help="检索词")
-    p_usearch.add_argument("--top", type=int, default=None, help="最多返回 N 条（默认读 config search.top_k）")
-    _add_filter_args(p_usearch)
+    # --- research bundle ---
+    p_research = sub.add_parser("research", help="生成可审计证据包")
+    p_research.set_defaults(func=cmd_research)
+    p_research.add_argument("query", nargs="+", help="研究问题或检索目标")
+    p_research.add_argument("--top", type=int, default=None, help="种子证据节点数量")
+    p_research.add_argument("--run-dir", default=None, help="证据包输出目录（默认 workspace/research-runs/<query>）")
+    p_research.add_argument("--neighbors", type=int, default=1, help="每个命中节点展开前后相邻节点数")
+    p_research.add_argument("--max-chars", type=int, default=40000, help="证据包总字符预算")
+    p_research.add_argument("--per-node-max-chars", type=int, default=6000, help="单个证据节点字符预算")
+    _add_filter_args(p_research)
 
     # --- enrich-toc ---
     p_toc = sub.add_parser("enrich-toc", help="LLM 过滤标题噪声，提取论文 TOC 写入 JSON")
@@ -3047,6 +2855,7 @@ def main() -> None:
     p_refetch.set_defaults(func=cmd_refetch)
     p_refetch.add_argument("paper_id", nargs="?", help="论文 ID（省略则需 --all）")
     p_refetch.add_argument("--all", action="store_true", help="补查所有缺失引用量的论文")
+    p_refetch.add_argument("--workspace", "-w", help="只补查指定工作区中的论文")
     p_refetch.add_argument("--force", action="store_true", help="强制重新查询（包括已有引用量的论文）")
     p_refetch.add_argument("--jobs", "-j", type=int, default=5, help="并发数（默认 5）")
 
@@ -3074,21 +2883,6 @@ def main() -> None:
     p_sr.add_argument("paper_ids", nargs="+", help="论文 ID（至少 2 个）")
     p_sr.add_argument("--min", type=int, default=None, help="最少共引次数（默认 2）")
     p_sr.add_argument("--ws", type=str, default=None, help="限定工作区范围")
-
-    # --- topics ---
-    p_topics = sub.add_parser("topics", help="BERTopic 主题建模与探索")
-    p_topics.set_defaults(func=cmd_topics)
-    p_topics.add_argument("--build", action="store_true", help="构建主题模型（增量）")
-    p_topics.add_argument("--rebuild", action="store_true", help="清空后重建主题模型")
-    p_topics.add_argument("--reduce", type=int, default=None, metavar="N", help="快速合并主题到 N 个（不重新聚类）")
-    p_topics.add_argument(
-        "--merge", type=str, default=None, metavar="IDS", help="手动合并主题，格式: 1,6,14+3,5（用+分隔组）"
-    )
-    p_topics.add_argument("--topic", type=int, default=None, metavar="ID", help="查看指定主题的论文（-1 查看 outlier）")
-    p_topics.add_argument("--top", type=int, default=None, help="返回条数")
-    p_topics.add_argument("--min-topic-size", type=int, default=None, help="最小聚类大小（覆盖 config）")
-    p_topics.add_argument("--nr-topics", type=int, default=None, help="目标主题数（覆盖 config，0=auto, -1=不合并）")
-    p_topics.add_argument("--viz", action="store_true", help="生成 HTML 可视化图表（6 张）")
 
     # --- backfill-abstract ---
     p_bf = sub.add_parser("backfill-abstract", help="补全缺失的 abstract（支持 DOI 官方抓取）")
@@ -3120,7 +2914,7 @@ def main() -> None:
     p_repair.add_argument("--dry-run", action="store_true", help="预览，不实际修改")
 
     # --- explore ---
-    p_explore = sub.add_parser("explore", help="期刊全量探索（OpenAlex 拉取 + 嵌入 + 聚类）")
+    p_explore = sub.add_parser("explore", help="文献探索（OpenAlex 拉取 + FTS5 检索）")
     p_explore.set_defaults(func=cmd_explore)
     p_explore_sub = p_explore.add_subparsers(dest="explore_action", required=True)
 
@@ -3139,29 +2933,10 @@ def main() -> None:
     p_ef.add_argument("--incremental", action="store_true", help="增量更新（追加新论文）")
     p_ef.add_argument("--limit", type=int, default=None, help="最多拉取的论文数量上限（不设则无限）")
 
-    p_ee = p_explore_sub.add_parser("embed", help="为探索库生成语义向量")
-    p_ee.add_argument("--name", required=True, help="探索库名称")
-    p_ee.add_argument("--rebuild", action="store_true", help="清空后重建")
-
-    p_et = p_explore_sub.add_parser("topics", help="探索库主题建模")
-    p_et.add_argument("--name", required=True, help="探索库名称")
-    p_et.add_argument("--build", action="store_true", help="构建主题模型")
-    p_et.add_argument("--rebuild", action="store_true", help="重建主题模型")
-    p_et.add_argument("--topic", type=int, default=None, help="查看指定主题的论文")
-    p_et.add_argument("--top", type=int, default=None, help="返回条数")
-    p_et.add_argument("--min-topic-size", type=int, default=None, help="最小聚类大小（默认 30）")
-    p_et.add_argument("--nr-topics", type=int, default=None, help="目标主题数（默认自然聚类）")
-
-    p_es = p_explore_sub.add_parser("search", help="探索库搜索（语义/关键词/融合）")
+    p_es = p_explore_sub.add_parser("search", help="探索库 FTS5 检索")
     p_es.add_argument("--name", required=True, help="探索库名称")
     p_es.add_argument("query", nargs="+", help="查询文本")
     p_es.add_argument("--top", type=int, default=None, help="返回条数")
-    p_es.add_argument(
-        "--mode", choices=["semantic", "keyword", "unified"], default="semantic", help="搜索模式（默认 semantic）"
-    )
-
-    p_ev = p_explore_sub.add_parser("viz", help="生成全部可视化（HTML）")
-    p_ev.add_argument("--name", required=True, help="探索库名称")
 
     p_el = p_explore_sub.add_parser("list", help="列出所有探索库")
 
@@ -3222,7 +2997,6 @@ def main() -> None:
     p_ws_add.add_argument("paper_refs", nargs="*", help="论文引用（UUID / 目录名 / DOI）")
     p_ws_add_batch = p_ws_add.add_mutually_exclusive_group()
     p_ws_add_batch.add_argument("--search", dest="add_search", type=str, default=None, help="按搜索结果批量添加")
-    p_ws_add_batch.add_argument("--topic", dest="add_topic", type=int, default=None, help="按主题 ID 批量添加")
     p_ws_add_batch.add_argument("--all", dest="add_all", action="store_true", default=False, help="添加全库论文")
     p_ws_add.add_argument("--top", type=int, default=None, help="限制 --search 返回条数")
     p_ws_add.add_argument("--filter", dest="scope_filter", help="添加前按主题范围过滤（优先 LLM，失败时启发式）")
@@ -3244,9 +3018,6 @@ def main() -> None:
     p_ws_search.add_argument("name", help="工作区名称")
     p_ws_search.add_argument("query", nargs="+", help="查询文本")
     p_ws_search.add_argument("--top", type=int, default=None, help="返回条数")
-    p_ws_search.add_argument(
-        "--mode", choices=["unified", "keyword", "semantic"], default="unified", help="搜索模式（默认 unified）"
-    )
     _add_filter_args(p_ws_search)
 
     p_ws_rename = p_ws_sub.add_parser("rename", help="重命名工作区")
@@ -3267,6 +3038,51 @@ def main() -> None:
         default="json",
         help="导出格式（默认 json）",
     )
+
+    p_ws_status = p_ws_sub.add_parser("status", help="查看工作区完整性状态")
+    p_ws_status.add_argument("name", help="工作区名称")
+    p_ws_status.add_argument("--papers", action="store_true", help="包含逐篇论文状态")
+
+    p_ws_export_evidence = p_ws_sub.add_parser("export-evidence", help="导出工作区证据清单 JSON")
+    p_ws_export_evidence.add_argument("name", help="工作区名称")
+    p_ws_export_evidence.add_argument("-o", "--output", type=str, default=None, help="输出文件路径")
+
+    p_ws_screen = p_ws_sub.add_parser("screen", help="按范围标准筛选工作区论文")
+    p_ws_screen.add_argument("name", help="工作区名称")
+    p_ws_screen.add_argument("--criteria", type=str, default=None, help="筛选标准文本")
+    p_ws_screen.add_argument("--criteria-file", type=str, default=None, help="筛选标准文件")
+    p_ws_screen.add_argument("--target", type=int, default=None, help="目标保留篇数")
+    p_ws_screen.add_argument("--apply", action="store_true", help="将筛选结果实际应用到工作区")
+    p_ws_screen.add_argument("-o", "--output", type=str, default=None, help="输出筛选报告路径")
+
+    p_ws_plan = p_ws_sub.add_parser("plan-package", help="生成 review 规划包骨架")
+    p_ws_plan.add_argument("name", help="工作区名称")
+    p_ws_plan.add_argument("--title", type=str, default=None, help="综述标题")
+    p_ws_plan.add_argument("--criteria", type=str, default="", help="筛选标准文本")
+    p_ws_plan.add_argument("--criteria-file", type=str, default=None, help="筛选标准文件")
+
+    p_ws_cov = p_ws_sub.add_parser("citation-coverage", help="检查稿件引用覆盖 reference-map 的程度")
+    p_ws_cov.add_argument("name", help="工作区名称")
+    p_ws_cov.add_argument("--manuscript", type=str, default=None, help="稿件 Markdown 路径（默认 final.md/write.md）")
+    p_ws_cov.add_argument(
+        "--require",
+        choices=["retained", "citable", "must_cite"],
+        default="retained",
+        help="要求进入正文的引用范围（默认 retained）",
+    )
+    p_ws_cov.add_argument("--fail-if-missing", action="store_true", help="缺失必需引用或出现未知 citekey 时返回非零状态")
+    p_ws_cov.add_argument("-o", "--output", type=str, default=None, help="输出检查报告路径")
+
+    p_ws_net = p_ws_sub.add_parser("citation-network", help="导出工作区引用网络 sidecar")
+    p_ws_net.add_argument("name", help="工作区名称")
+    p_ws_net.add_argument("--min-shared", type=int, default=2, help="共同参考文献最小共引次数（默认 2）")
+    p_ws_net.add_argument("-o", "--output", type=str, default=None, help="输出 JSON 路径（默认 sidecars/citation-network.json）")
+    p_ws_net.add_argument("--print-json", action="store_true", help="写文件后同时输出 JSON")
+
+    p_ws_fig = p_ws_sub.add_parser("figure-status", help="检查 table-figure-plan 中计划图片是否已导出")
+    p_ws_fig.add_argument("name", help="工作区名称")
+    p_ws_fig.add_argument("--fail-if-missing", action="store_true", help="存在未导出的计划图片时返回非零状态")
+    p_ws_fig.add_argument("-o", "--output", type=str, default=None, help="输出检查报告路径")
 
     # --- import-endnote ---
     p_ie = sub.add_parser("import-endnote", help="从 Endnote XML/RIS 导入论文元数据")
@@ -3391,21 +3207,15 @@ def main() -> None:
     )
 
     # --- enrich-l3 ---
-    p_l3 = sub.add_parser("enrich-l3", help="LLM 提取结论段写入 JSON")
+    p_l3 = sub.add_parser("enrich-l3", help="LLM 生成 L3 结论层写入 JSON")
     p_l3.set_defaults(func=cmd_enrich_l3)
     p_l3.add_argument("paper_id", nargs="?", help="论文 ID（省略则需 --all）")
     p_l3.add_argument("--all", action="store_true", help="处理 papers_dir 中所有论文")
+    p_l3.add_argument("--workspace", "-w", help="只处理指定工作区中的论文")
+    p_l3.add_argument("--only-missing", action="store_true", help="仅处理缺少 L3 的论文（需配合 --workspace）")
     p_l3.add_argument("--force", action="store_true", help="强制重新提取（覆盖已有结果）")
     p_l3.add_argument("--inspect", action="store_true", help="展示提取过程详情")
     p_l3.add_argument("--max-retries", type=int, default=2, help="最大重试次数（默认 2）")
-
-    # --- translate ---
-    p_trans = sub.add_parser("translate", help="翻译论文 Markdown 到目标语言")
-    p_trans.set_defaults(func=cmd_translate)
-    p_trans.add_argument("paper_id", nargs="?", help="论文 ID（省略则需 --all）")
-    p_trans.add_argument("--all", action="store_true", help="批量翻译所有论文")
-    p_trans.add_argument("--lang", type=str, default=None, help="目标语言（默认读 config translate.target_lang）")
-    p_trans.add_argument("--force", action="store_true", help="强制重新翻译（覆盖已有翻译）")
 
     args = parser.parse_args()
     cfg = load_config()

@@ -201,7 +201,7 @@ Recommended default order:
    - Existing workspace: inspect current coverage and evidence gaps first
    - New topic / new outline: first break it into sections, claims, and comparison dimensions
 2. **Use autor's own retrieval tools for the first candidate pass**
-   - `usearch`
+   - `search`
    - `top-cited`
    - `explore`
    - `search-author`
@@ -225,7 +225,7 @@ uv run autor pipeline ingest
 8. **Relocate the newly ingested papers and add them to the workspace**
 
 ```bash
-uv run autor usearch "<query>" --top 20
+uv run autor search "<query>" --top 20
 uv run autor ws add <workspace> <paper-id-or-doi...>
 ```
 
@@ -279,13 +279,14 @@ Run metadata retrieval in batches by branch, not only by one umbrella query. Kee
 
 ### Required artifacts in full-review mode
 
-Leave behind at least:
+Leave coverage traces in the current canonical planning package:
 
-- `query-matrix.md`: the search matrix and what each query branch was trying to capture
-- `download-report.md`: what was retrieved, downloaded, failed, or remained metadata-only
-- `corpus-ledger.md` or an equivalent table: each candidate's branch, identifiers, and status
+- `acquisition-log.md`: query matrix, branch objectives, candidate counts, download failures, no-full-text records, and ingest status
+- `reference-map.json`: each retained or unresolved candidate's citation key, identifiers, corpus layer, section mapping, and full-text status
+- `evidence-ledger.md`: final retained/excluded/unresolved evidence roles by citation key
+- `sidecars/`: raw Records responses, task payloads, artifact manifests, or large candidate ledgers
 
-These artifacts are the trace of coverage. Without them, the user cannot tell whether the review truly searched the field or only a narrow subset of famous papers.
+Legacy files such as `query-matrix.md`, `download-report.md`, or `corpus-ledger.md` may be generated only as derived compatibility exports. The canonical trace of coverage is `acquisition-log.md` plus `reference-map.json`.
 
 ## When not to download immediately
 

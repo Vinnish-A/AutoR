@@ -11,7 +11,7 @@ license = "MIT"
 authors = [
     {name = "Zimo Liao", email = "zimoliao@mail.ustc.edu.cn"},
 ]
-keywords = ["academic", "literature", "research", "knowledge-base", "semantic-search", "mcp", "claude"]
+keywords = ["academic", "literature", "research", "knowledge-base", "auditable-search", "mcp", "claude"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -34,17 +34,6 @@ Repository = "https://github.com/Vinnish-A/AutoR"
 Issues = "https://github.com/Vinnish-A/AutoR/issues"
 
 [project.optional-dependencies]
-embed = [
-    "sentence-transformers>=3.0",
-    "transformers>=4.41.2,<4.42",
-    "numpy>=1.24",
-    "faiss-cpu>=1.7",
-]
-topics = [
-    "autor[embed]",
-    "bertopic>=0.16",
-    "pandas>=2.0",
-]
 pdf = [
     "pymupdf>=1.24",
 ]
@@ -66,12 +55,9 @@ mcp = [
     "mcp>=1.0",
 ]
 full = [
-    "autor[embed]",
-    "autor[topics]",
     "autor[import]",
     "autor[pdf]",
     "autor[office]",
-    "modelscope>=1.10",
     "curl-cffi>=0.5",
 ]
 dev = [
@@ -119,7 +105,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"autor/topics.py" = ["F821"]
 "autor/*.py" = ["SIM105", "SIM102", "SIM115", "E402", "F841", "RUF059", "B904"]
 "autor/**/*.py" = ["SIM105", "SIM102", "SIM115", "E402", "F841", "RUF059", "B904"]
 
@@ -142,8 +127,6 @@ check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [
-    "autor.topics",
-    "autor.vectors",
     "autor.cli",
     "autor.explore",
     "autor.ingest.*",

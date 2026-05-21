@@ -9,7 +9,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![MCP Tools](https://img.shields.io/badge/MCP_Tools-32-green.svg)](autor/mcp_server.py)
+[![MCP Tools](https://img.shields.io/badge/MCP_Tools-40-green.svg)](autor/mcp_server.py)
 
 </div>
 
@@ -59,27 +59,25 @@ WSL will try to detect Windows PowerShell automatically. If your environment is 
 
 |  | Feature | Description |
 |--|---------|-------------|
-| **PDF Parsing** | Deep structural extraction | [MinerU](https://github.com/opendatalab/MinerU) → Markdown with figures and equations preserved. Supports journal articles, theses, technical reports, and other document types |
-| **Hybrid Retrieval** | Keywords + semantics | FTS5 + chunk-aware semantic embeddings + FAISS → RRF rank fusion |
-| **Topic Discovery** | Automatic clustering | BERTopic + 6 interactive HTML visualizations — works for both the main library and explore datasets |
-| **Literature Exploration** | Multi-dimensional discovery | OpenAlex 9-dimensional filtering (journal, concept, author, institution, keyword, source type, year, citation count, document type) → vectorization → clustering → search |
+| **PDF Parsing** | Deep structural extraction | [MinerU](https://github.com/opendatalab/MinerU) → Markdown with equations, tables, and structure preserved. Image attachments are discarded by default to keep the knowledge base text-first |
+| **Retrieval** | Auditable evidence search | Node-level SQLite FTS5 over metadata and `paper.md`; `autor research` writes bundle/trace/verify artifacts for provenance |
+| **Literature Exploration** | Multi-dimensional discovery | OpenAlex 9-dimensional filtering (journal, concept, author, institution, keyword, source type, year, citation count, document type) → FTS5 search |
 | **Citation Graph** | References and influence | Forward/backward citations and shared-reference analysis |
-| **Layered Reading** | Load on demand | L1 metadata → L2 abstract → L3 conclusion → L4 full text |
+| **Layered Reading** | Load on demand | L1 metadata → L2 abstract → L3 paper-level conclusion card generated during normal ingest → L4 full text |
 | **Multi-source Import** | Bring your existing library | Endnote XML/RIS, Zotero (API + SQLite, including collection → workspace mapping), PDF, Markdown — with more sources on the way |
-| **Workspace** | Organize by project | Manage subsets of papers, search within scope, and export BibTeX / RIS / Markdown / DOCX |
+| **Workspace** | Organize by project | Manage subsets of papers, search within scope, inspect corpus status, export evidence ledgers, and generate planning-package skeletons |
 | **Federated Search** | Search beyond one silo | `autor fsearch` queries the main library, `explore` datasets, and arXiv together |
-| **Translation** | Read across languages | `autor translate` preserves formulas, code blocks, and images while translating Markdown papers |
 | **Office Documents** | Inspect and ingest DOCX/PPTX/XLSX | `autor document inspect` checks layout and content; Office files can also flow through the document inbox |
-| **Research Insights** | Learn from your own workflow | `autor insights` surfaces hot queries, frequently read papers, reading trends, and semantic neighbors |
+| **Research Insights** | Learn from your own workflow | `autor insights` surfaces hot queries, frequently read papers, reading trends, and adjacent unread papers |
 | **Academic Writing** | AI-assisted drafting | Literature reviews, paper sections, reviewer-driven revision, citation verification, reviewer responses, and research-gap analysis — every citation remains traceable to your own library |
-| **MCP Server** | 32 tools | Works with Claude Desktop, Cursor, and other MCP clients |
+| **MCP Server** | Tool interface | Works with Claude Desktop, Cursor, and other MCP clients |
 
 ## More Than Paper Management
 
-autor turns PDFs into clean Markdown with accurate LaTeX equations and complete image attachments. That means your coding agent does more than just “read” papers:
+autor turns PDFs into clean Markdown with accurate LaTeX equations and structured text. MinerU image attachments are intentionally discarded; generated review figures should use `autor plot` / `autor/plot.py` explicitly. That means your coding agent does more than just “read” papers:
 
 - **Reproduce methods** — read an algorithm description, implement it, and run it immediately
-- **Verify claims** — extract data from figures, recompute results independently, and cross-check the paper
+- **Verify claims** — recompute results independently, cross-check the paper, and analyze only explicitly provided or generated images
 - **Extend derivations** — continue a paper's math, then validate edge cases numerically
 - **Visualize comparisons** — plot paper results alongside your own experiments
 
@@ -98,7 +96,7 @@ autor is designed to be **agent-agnostic**. It already ships with ready-to-use i
 | [GitHub Copilot](https://github.com/features/copilot) | Instruction wrapper | `.github/copilot-instructions.md` |
 | [Codex](https://openai.com/codex) / OpenClaw | Full instructions + skills | `AGENTS.md` + `.agents/skills/` |
 
-The **MCP server** (`autor-mcp`, 32 tools) works with any MCP-compatible client. Skills follow the open [AgentSkills.io](https://agentskills.io) standard — `.agents/skills/` and `.claude/skills/` mirror the canonical `.github/skills/` tree for easier cross-agent discovery.
+The **MCP server** (`autor-mcp`) works with any MCP-compatible client. Skills follow the open [AgentSkills.io](https://agentskills.io) standard — `.agents/skills/` and `.claude/skills/` mirror the canonical `.github/skills/` tree for easier cross-agent discovery.
 
 Before asking an external system to fetch or download a paper, call the MCP `identify` tool to check exact DOI / PMID / title duplicates in the library and an optional workspace.
 
@@ -109,17 +107,16 @@ For a quick overview of built-in skills, see `.github/skills/`, `CLAUDE.md`, or 
 ## Workflow
 
 ```
-PDF → MinerU → Structured Markdown (figures + LaTeX preserved)
+PDF → MinerU → Structured Markdown (LaTeX and tables preserved; image artifacts discarded)
                     ↓
           Metadata extraction (regex + LLM cross-check)
           API enrichment (Crossref / Semantic Scholar / OpenAlex / PubMed)
                     ↓
           DOI / PMID dedup → data/papers/<Author-Year-Title>/
                     ↓
-      ┌─────────────┼─────────────┐
-   FTS5 index      FAISS vectors      BERTopic
-   (keywords)      (semantic)        (clustering)
-      └─────────────┼─────────────┘
+                    ↓
+   Node-level FTS5 evidence index
+   (paper_nodes + paper_node_fts; no vectors)
                     ↓
       Your agent (CodeX / Cursor / CLI / MCP / ...)
 ```
@@ -134,6 +131,22 @@ autor pipeline ingest --workspace my_research_project
 
 The workspace is created automatically if needed. Only papers that are newly written to `data/papers/` in that run are added, so pending items without a DOI and duplicates stopped by deduplication are excluded automatically.
 
+For existing workspace corpora, the same `--workspace/-w` flag now scopes non-inbox paper/global steps instead of scanning the whole library:
+
+```bash
+autor pipeline enrich -w my_research_project
+autor enrich-l3 --workspace my_research_project --only-missing
+```
+
+Useful pre-writing workspace checks:
+
+```bash
+autor ws status my_research_project --papers
+autor ws export-evidence my_research_project -o workspace/my_research_project/evidence.json
+autor ws screen my_research_project --criteria "breast cancer immunotherapy resistance" --target 150 -o workspace/my_research_project/screening.json
+autor ws plan-package my_research_project --title "Breast cancer immunotherapy resistance"
+```
+
 ## Configuration
 
 Main config: `config.yaml` (tracked in git). Sensitive data: `config.local.yaml` (not tracked).
@@ -141,12 +154,12 @@ Main config: `config.yaml` (tracked in git). Sensitive data: `config.local.yaml`
 | Key | Purpose | How to get it |
 |-----|---------|---------------|
 | `DEEPSEEK_API_KEY` | LLM — metadata extraction, content enrichment, academic discussion | [DeepSeek](https://platform.deepseek.com/) (default) or any OpenAI-compatible API |
-| `MINERU_API_KEYS` | PDF → structured Markdown cloud tokens, comma-separated for parallel accounts | Free from [mineru.net](https://mineru.net/apiManage/token), or [self-host](https://github.com/opendatalab/MinerU) |
+| `MINERU_API_KEYS` | PDF → structured Markdown cloud tokens, comma-separated for parallel accounts; in `hybrid` mode each token runs alongside the local MinerU source | Free from [mineru.net](https://mineru.net/apiManage/token), or [self-host](https://github.com/opendatalab/MinerU) |
 | `NCBI_API_KEY` | PubMed / E-utilities PMID lookup with higher rate limits | [NCBI account settings](https://www.ncbi.nlm.nih.gov/account/settings/) |
 
-> **Both are optional.** Without an LLM key, autor falls back to regex-only extraction. Without MinerU tokens, place `.md` files directly into `data/inbox/` or run a local MinerU endpoint. MinerU tokens belong in `config.local.yaml` or `MINERU_API_KEYS`, not `config.yaml`.
+> **Both are optional.** Without an LLM key, autor falls back to regex-only extraction. Without MinerU tokens, place `.md` files directly into `data/inbox/` or run a local MinerU endpoint. In `hybrid` mode, a running local MinerU endpoint and all configured MinerU tokens process batch PDFs together. MinerU tokens belong in `config.local.yaml` or `MINERU_API_KEYS`, not `config.yaml`.
 
-The default embedding model is `Alibaba-NLP/gte-Qwen2-1.5B-instruct`. On the main library, `autor embed` now reads full `paper.md`, chunks it with overlap, and stores chunk-level evidence vectors for retrieval. The default download source is Hugging Face; if this model is mirrored in your environment, you can switch `embed.source`.
+Normal ingest now generates L3 paper-level conclusion cards and updates the node-level FTS5 evidence index, so papers are immediately useful for layered reading, search, and auditable bundle generation. L3 first uses explicit conclusion/summary sections when present; otherwise it synthesizes a constrained takeaway from abstract, results, discussion, and table/caption text present in Markdown. AutoR no longer builds semantic vectors or FAISS storage.
 
 Full configuration reference → [`config.yaml`](config.yaml)
 
@@ -163,8 +176,7 @@ Full configuration reference → [`config.yaml`](config.yaml)
 
 ```
 autor search QUERY         Keyword search
-autor vsearch QUERY        Semantic vector search
-autor usearch QUERY        Hybrid search
+autor research QUERY       Generate evidence bundle + trace/verify
 autor search-author NAME   Search by author
 autor top-cited            Rank by citation count
 autor show PAPER           View paper content (L1-L4)
@@ -173,17 +185,20 @@ autor citing PAPER         View citing papers
 autor shared-refs A B      Shared-reference analysis
 autor fsearch QUERY        Federated search across library / explore / arXiv
 autor pipeline PRESET      Run the ingest pipeline
-autor index                Build the FTS5 search index
-autor embed                Generate semantic vectors
+autor index                Build the node-level FTS5 evidence index
 autor enrich-toc           Extract table of contents
-autor enrich-l3            Extract conclusion section
+autor enrich-l3            Generate L3 paper-level conclusion card
 autor backfill-abstract    Fill in missing abstracts
 autor refetch              Refresh citation counts
-autor translate PAPER      Translate markdown papers
 autor explore ...          OpenAlex exploration workflow
-autor topics               BERTopic topic modeling
 autor export ...           Export BibTeX / RIS / Markdown / DOCX
 autor ws ...               Workspace management
+autor ws status            Inspect workspace corpus completeness
+autor ws export-evidence   Export workspace evidence JSON
+autor ws screen            Score/apply scope screening
+autor ws plan-package      Create references.bib / reference-map.json planning skeleton
+autor ws citation-coverage Check manuscript citations against reference-map.json
+autor ws figure-status     Check planned figure exports before final delivery
 autor import-endnote       Import from Endnote
 autor import-zotero        Import from Zotero
 autor attach-pdf           Attach a PDF to an existing paper
@@ -204,12 +219,10 @@ autor metrics              View LLM usage statistics
 
 ```
 autor/          # Python package
-  cli.py             # CLI entry point (35 top-level commands)
-  mcp_server.py      # MCP server (32 tools)
+  cli.py             # CLI entry point
+  mcp_server.py      # MCP server tools
   ingest/            # PDF parsing + metadata pipeline
-  index.py           # FTS5 full-text search
-  vectors.py         # Full-text chunk embeddings + FAISS retrieval
-  topics.py          # BERTopic topic modeling
+  index.py           # Node-level FTS5 search + evidence bundles
   loader.py          # L1-L4 layered loading
   explore.py         # OpenAlex literature exploration
   workspace.py       # Workspace management
@@ -217,9 +230,7 @@ autor/          # Python package
   audit.py           # Data quality auditing
   citation_check.py  # Citation verification
   document.py        # Office document inspection
-  translate.py       # Paper translation
-
-.github/skills/      # Canonical agent skills (35 total)
+.github/skills/      # Canonical agent skills
 .claude/skills/      # Mirror for Claude / Cline
 .agents/skills/      # Mirror for Codex / OpenClaw
 data/papers/         # Your paper library (not tracked in git)

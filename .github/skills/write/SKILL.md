@@ -1,116 +1,52 @@
 ---
 name: write
-description: Draft a fact-grounded review manuscript from the current workspace by following the `/plan` outputs, using conclusion-led section seeds, restrained Nature Reviews-style control, and DOCX-ready Markdown citations with CSL. Use this after planning when the user wants the full draft.
+description: Draft a fact-grounded review manuscript from an approved autor planning package. Uses references.bib citation keys, reference-map.json, review-plan.md, evidence-ledger.md, and table-figure-plan.md; use after plan is approved.
 ---
 
 # Plan-Grounded Review Drafting
 
-Use this skill after `/plan`. It turns a fixed outline and evidence base into manuscript prose. It is not for re-planning.
+Use this skill after planning is approved. It turns the canonical planning package into manuscript prose. It is not for re-planning, adding new papers, or silently filling evidence gaps from memory.
 
-## Hard constraints
+Hard constraint for manuscript prose: writing, translation, polishing, and final integration must be produced by the active coding-agent framework's own model capability. Do not call external LLM APIs, AutoR LLM-backed generation utilities, external translation services, or custom scripts that generate prose through external models. Deterministic scripts are allowed only for formatting, citation checks, figure-status checks, DOCX export, and document inspection.
 
-1. **Fact-grounded**: use only papers and evidence that already exist in the current workspace
-2. **Plan-grounded**: follow the structure and section tasks produced by `/plan`
-3. **Conclusion-led judgment**: section-level claims must start from retained conclusions, comparative evidence, and boundary conditions rather than generic balance
-4. **Style-guided, not style-copying**: absorb register and structure, not phrases
-5. **Seeded drafting**: vary argumentative entry points, but anchor every seed to a section conclusion rather than a reusable rhetorical template
-6. **DOCX-ready citations**: use Markdown citations plus a real CSL file
+Do not use a section-file merge workflow. The canonical manuscript is one integrated file at `workspace/<name>/write.md`. Subagents may provide bounded advisory text or critique when explicitly authorized, but the responsible writing agent must integrate and revise the manuscript directly. MCP/client-side concatenation or scripted merging of `sections/` files is prohibited.
 
-## Required inputs
+## Required Inputs
 
-The user must specify a workspace (`--ws NAME`).
-
-Before drafting, read:
-
-- `workspace/<name>/review-plan.md`
-- `workspace/<name>/execution-tasks.md`
-- `workspace/<name>/paper-classification.md`
-- `workspace/<name>/section-evidence.md`
-- `workspace/<name>/table-plan.md`
-
-If these files are missing, stop and run `/plan` first.
-
-## Workflow
-
-### 0. Load plan files and style references
-
-Read the plan artifacts first.
-
-If the target style is **Nature Reviews** or **Springer Nature Reviews**, read these files before drafting:
-
-- `.github/skills/polish/example/originals.md`
-- `.github/skills/polish/example/excerpts.md`
-- `.github/skills/polish/example/strategies.md`
-
-Use them for:
-
-- editorial compression
-- paragraph rhythm
-- argument control
-- calibrated judgment
-- conclusion design
-
-Do not reuse:
-
-- claims
-- examples
-- terminology that does not belong to the workspace
-- phrasing
-- metaphors
-
-The point is to remember how the prose behaves, not what those papers say.
-
-### 1. Lock the evidence boundary
-
-Claims, comparisons, controversy judgments, and summary statements should come only from material inside the current workspace:
-
-- papers already in the workspace
-- evidence files produced by `/plan`
-- trial outputs under `workspace/<name>/trials/` if present
-
-Do not patch factual gaps from model memory. If a claim is not supported in the workspace:
-
-- go back to `/plan` or `/search`
-- or mark it as `[CITATION NEEDED IN WORKSPACE]`
-
-Never invent citations.
-
-### 2. Prepare citation assets first
-
-#### 2.1 Export workspace references
-
-```bash
-autor ws export <name> -o workspace/<name>/references.bib
-```
-
-#### 2.2 Choose the CSL file
-
-Use this order:
-
-1. `workspace/<name>/style.csl`
-2. any existing `*.csl` under `workspace/<name>/`
-3. fetch the default CSL: `nature.csl`
-
-Recommended path:
+The user must specify a workspace. Before drafting, read:
 
 ```text
-workspace/<name>/csl/nature.csl
+workspace/<name>/references.bib
+workspace/<name>/reference-map.json
+workspace/<name>/review-plan.md
+workspace/<name>/evidence-ledger.md
+workspace/<name>/table-figure-plan.md
+workspace/<name>/acquisition-log.md if present
+workspace/<name>/trials/** if referenced by the plan
 ```
 
-Source:
+If any of the first five files is missing or contradictory, stop and return to `plan`.
 
-- `https://raw.githubusercontent.com/citation-style-language/styles/master/nature.csl`
+Older files such as `paper-classification.md`, `section-evidence.md`, `table-plan.md`, and `execution-tasks.md` are compatibility files only. If they conflict with the canonical files, trust the canonical files and report the conflict.
 
-#### 2.3 Use Markdown citations in the main text
+## Evidence Boundary
 
-Do not use plain-text citation placeholders such as `(Author, Year)`.
+Hard rules:
 
-Use Pandoc / citeproc Markdown citations:
+1. Use only citation keys with `bibliographic_validity=citable` and retained trial records from the planning package.
+2. Do not cite unresolved, duplicate-only, blocked-without-metadata, `needs_metadata_fix`, or `not_citable` records.
+3. Excluded-but-citable, conflicting, taxonomy-boundary, adjacent, method, and background literature may be cited only for the role assigned in `reference-map.json` or `evidence-ledger.md`; do not use them as support for the central conclusion unless the plan explicitly assigns that role.
+4. Follow `citation_policy`: `must_cite` papers must appear in the manuscript; `cite_if_relevant` papers may be omitted only when no drafted claim needs them; `background_only` papers cannot carry claim support; `do_not_cite` records must never appear as manuscript citations.
+5. Trial records support program landscape, endpoint design, recruitment, phase, and safety-context claims. They do not replace paper evidence.
+6. If a claim, table, or figure cannot be supported by the plan files, stop with a plan-gap note.
+7. Use Pandoc citations such as `[@Smith2024]`; every key must exist in `references.bib`.
+8. L3 is an orientation layer. If the plan marks an L3 as `inferred_synthesis`, use it for paper-level understanding but ground numerical, clinical, mechanistic, or controversial claims in the ledger's quantitative signals or L4-backed evidence.
+9. Do not draft from an approved plan if it required a citation-network layer but `CITATION_NETWORK_STATUS` is not `COMPLETED`.
+10. Preserve the valid-reference accounting: the manuscript citation universe is the `bibliographic_validity=citable` set, not merely the retained/supportive subset.
 
-- single citation: `[@smith2021]`
-- multiple citations: `[@smith2021; @wang2023]`
+## Citation Assets
 
-Recommended YAML header:
+Ensure the manuscript starts with a valid YAML header:
 
 ```yaml
 ---
@@ -121,181 +57,153 @@ reference-section-title: References
 ---
 ```
 
-### 3. Build a conclusion-led seed map before drafting
+Use an existing CSL under the workspace when available. For Nature Reviews / Springer Nature Reviews style, use `workspace/<name>/csl/nature.csl`.
 
-Do not begin by free-writing the introduction. First extract a **conclusion kernel** for each section.
+## Drafting Workflow
 
-A conclusion kernel is the short judgment the retained evidence can actually support:
+### 1. Build section kernels
 
-- what looks robust
-- what is limited or contested
-- what the section should refuse to overclaim
+For each main section in `review-plan.md`, derive:
 
-Only then build **section seeds**.
+- controlling claim
+- strongest supporting citation keys
+- main contrast, controversy, or boundary
+- what the section must not overclaim
+- required tables or figures
 
-A seed is not a title, theme, or generic scene-setter. It is the first argumentative move that lets the section arrive quickly at that kernel.
+Save this only if useful, for example:
 
-Build seeds in this order:
+```text
+workspace/<name>/sidecars/section-kernels.md
+```
 
-1. distill the section's conclusion kernel into 1-2 sentences from `review-plan.md` and `section-evidence.md`
-2. note the strongest comparison, boundary, contradiction, or practical decision point
-3. draft 2-4 seed candidates from different families
-4. discard any seed that could open three unrelated sections equally well
+### 2. Draft as one integrated manuscript
 
-Seed families:
-
-| Seed family | Use when | Example move |
-| --- | --- | --- |
-| Misread -> correction | The field is commonly framed in a misleading way | "These systems are often grouped together, yet the retained studies separate them by viability control rather than by indication." |
-| Boundary tightening | The topic is broad and needs scope control | "Only a subset of these platforms shares the fabrication and biosafety constraints that matter here." |
-| Pressure -> mechanism | A biological or clinical pressure organizes the section | "Most designs are constrained first by bacterial survival during solidification, and the rest of the section follows from that pressure." |
-| Failure mode | The section works best when organized around what breaks first | "The turning point is loss of viability during fabrication, because later design choices are already constrained by that first break." |
-| State switch | The section is about transition, not static classification | "Progress began once the payload was treated as an active biological system instead of inert cargo." |
-| Paradigm shift | New data changed an older consensus | "Early reports established feasibility; later studies changed the question to which bacterial functions survive delivery." |
-| Decision point | Clinical or translational sections need choice logic | "The real divide in the data is which indications justify a live payload despite its manufacturing and safety cost." |
-| Evidence gap | The honest move is to define what can and cannot yet be claimed | "Animal efficacy looks plausible, but long-term biosafety and dose control remain thinly evidenced." |
-| Ranking judgment | The section needs clear selection rather than equal weighting | "Vaccination and wound repair are supported by deeper evidence than oncology or gas-driven delivery." |
-| Mismatch / friction | The section is organized by a design tension | "Mechanical performance and bacterial viability improve under different fabrication conditions, and that tension structures the section." |
-
-Seed rules:
-
-1. A seed must be specific enough to generate a first paragraph
-2. A seed must arise from workspace evidence and the section conclusion kernel, not generic rhetoric
-3. A seed should open one problem, not the whole field
-4. A seed may contain a provisional judgment if the evidence supports it, but it must still generate forward motion
-5. A seed should sound different from the seeds used in nearby sections, both in logic and cadence
-6. If a seed still works after swapping in a different topic noun, it is too generic
-
-For the **introduction**, each **major section opening**, and the **conclusion**, draft **2-4 seeds from different families** before choosing one.
-
-Then:
-
-1. select one primary seed
-2. keep one reserve seed only if needed
-3. note which opening moves are already used
-
-Prefer seeds that begin from a conclusion, ranking, contradiction, or boundary—not from scenery.
-
-Do not generate three full section drafts by default. Generate several openings, choose one, then continue.
-
-### 4. Draft section openings first
-
-Before writing full sections, draft the opening paragraph for:
-
-- the introduction
-- each major body section
-- the conclusion
-
-This is where most sameness begins. Fix it here, not later.
-
-Each opening paragraph should cash out the section's conclusion fast. By the end of the opening, the reader should know what the section is prepared to judge, not just what topic area it covers.
-
-Good section openings usually do one of these:
-
-- put the controlling conclusion or tension near sentence 1
-- define the real problem quickly
-- narrow the scope
-- install a mechanism or decision frame
-- mark a shift in evidence or state
-- expose a false equivalence in the literature
-
-Weak section openings usually do this:
-
-- generic scene-setting
-- "In recent years..." framing
-- paper listing
-- telling the reader what the section will do
-- repeating the same contrast formula used in the previous section
-- grand synthesis lines that could fit almost anywhere
-
-### 5. Draft the body section by section
-
-By default, follow `execution-tasks.md`:
-
-- core mechanism sections first
-- controversy and limitation sections next
-- introduction and conclusion after the body is stable
+Follow the section IDs and order in `review-plan.md`.
 
 For each section:
 
-1. read the retained-paper set in `paper-classification.md`
-2. read the matching `Section Card` in `review-plan.md`
-3. read the relevant evidence in `section-evidence.md`
-4. check which tables from `table-plan.md` belong here
-5. choose the section seed
-6. write a short section thesis in 1-2 sentences stating what the retained evidence supports most strongly, where it breaks, and what comparison the section will adjudicate
-7. build paragraphs from claim -> conclusion evidence -> reason for divergence -> implication/boundary
-8. prefer one hard judgment with boundaries over two balanced abstractions
-9. confirm that every citation key exists in `references.bib`
+1. read the section card in `review-plan.md`
+2. read the matching evidence rows in `evidence-ledger.md`
+3. check required assets in `table-figure-plan.md`
+4. write from a conclusion kernel rather than generic background
+5. synthesize evidence rather than listing papers
+6. state evidence-thin areas honestly
+7. instantiate required Markdown tables
+8. use only valid citation keys
+9. preserve L3 boundaries: distinguish author-stated conclusions, inferred L3 synthesis, quantitative signals, and limitations
 
-### 6. Keep the register controlled
+Dash discipline:
 
-Aim for:
+- Do not use em dashes as the default device for contrast, clarification, or dramatic compression.
+- Target no more than one em dash pair or dash break in a paragraph, and no more than two dash breaks per 1,000 words in the integrated manuscript.
+- If adjacent paragraphs both rely on em dashes, rewrite at least one of them.
+- Prefer a period, semicolon, colon, comma, parenthetical phrase, or a recast causal/contrastive sentence when the dash is only creating cadence.
+- Keep a dash only when it marks a genuinely useful interruption, appositive clarification, or high-value contrast that would be weaker in ordinary syntax.
 
-- fast openings, then narrowing
-- conclusion-led topic sentences
-- explanation before display
-- logic-driven transitions
-- ranked judgments when evidence allows
-- occasional plain sentences alongside compressed ones
-- calm but definite judgment
-- operational definitions
-- conclusions that sharpen questions instead of dissolving into vague optimism
+The integrated manuscript belongs at:
 
-Avoid:
+```text
+workspace/<name>/write.md
+```
 
-- generic background throat-clearing
-- paper-by-paper recitation
-- metanarrative such as "This section discusses..."
-- connector stacking
-- decorative balance with little selection
-- repeating the same seed family across every section
-- repeated "not X but Y" turns as a default sentence shape
-- grand synthesis lines that sound authoritative but could sit in any review
-- reflexes such as "the evidence reveals...", "occupies a distinctive niche...", or "the field is rapidly evolving..."
-- constant em-dash or thereby/therefore scaffolding
-- relying on a later polish pass to fix weak structure
+Do not create `workspace/<name>/sections/` as the canonical drafting surface. Do not concatenate section files to form the final draft.
 
-Tables and figures should carry analytical load. Do not narrate document design in the main text.
+### 3. Integrated revision and polish
 
-### 7. Outputs
+Revise the integrated manuscript as one coherent article:
 
-Write the default outputs to `workspace/<name>/`:
+- preserve approved section order
+- normalize terms
+- remove overlap
+- preserve table and figure IDs
+- resolve contradictions by following the plan and evidence ledger
+- do not add new evidence
+- scan for overused em dashes (`—` and sentence-level `--`); if a paragraph contains more than one, or the manuscript exceeds roughly two dash breaks per 1,000 words, revise before QA
 
-- `write.md`
-- `references.bib`
-- `csl/nature.csl` or another CSL file already chosen by the workspace
+Use `polish` only after the integrated draft exists, and only for language, rhythm, transitions, and removal of AI/process traces. Polish must not add facts, citations, sections, or hidden claims.
 
-Optional outputs:
+### 4. Quality gates
 
-- `write.docx` if the user explicitly wants a rendered DOCX
-- `sections/<nn>-<slug>.md` if the user wants each section saved separately
-- `seed-map.md` only if the user wants process artifacts or if the team is iterating on style
+For substantial manuscripts, run `critic` and `check`.
 
-### 8. Check before delivery
+Run citation coverage before promotion to `final.md` or export:
 
-Do not stop when the draft is merely complete. Check at least:
+```bash
+autor ws citation-coverage <name> --manuscript workspace/<name>/write.md --require must_cite --fail-if-missing
+```
 
-1. **Factual consistency**: every judgment can be traced to workspace evidence
-2. **Structural consistency**: the manuscript follows `review-plan.md`
-3. **Evidence use**: paragraphs actually use `section-evidence.md`, not generic filler
-4. **Citation coverage**: every retained paper appears at least once in the main text
-5. **Citation consistency**: every `[@key]` exists in `references.bib`
-6. **CSL consistency**: the YAML header points to a real CSL file
-7. **Seed fidelity**: the introduction and major section openings are anchored to distinct conclusion kernels, not generic framing
-8. **Opening diversity**: the introduction and major sections do not all begin with the same move
-9. **Paragraph control**: each paragraph solves one sub-problem and ends with a consequence, limit, or transition
-10. **Terminology control**: terms are stable, defined, and not inflated
-11. **Conclusion sharpness**: the ending ranks mature versus exploratory branches and names specific open questions
+For full-review audits, also inspect citable coverage without `--fail-if-missing` and record why omitted `cite_if_relevant`, background, boundary, conflicting, or excluded-but-citable papers were not used.
 
-If the problem is factual or structural, revise the draft. If the problem comes from the plan, revise `/plan` first.
+Critic should check:
 
-## Short examples
+- plan fidelity
+- citation-key validity
+- bibliographic-validity compliance
+- unsupported claims
+- non-citable literature leakage
+- misuse of excluded-but-citable, conflicting, or taxonomy-boundary records as positive support
+- corpus-layer violations
+- trial integration if relevant
+- analytical value of tables and figures
+- overclaiming from weak evidence
+- overuse of em dashes or double-hyphen sentence breaks as an AI-like cadence crutch
 
-User says: "`/plan` is finished. Draft the review and keep the citations ready for DOCX export."
+Check should assess through-line, section progression, clinical/mechanistic hierarchy, evidence-thin honesty, and final prose quality.
 
--> Read the plan files, prepare `references.bib` and the CSL, build seeds for the introduction and section openings, then draft section by section.
+If the failure is a plan gap, return to `plan` rather than patching the manuscript.
 
-User says: "Write this as a Nature Reviews-style review, but avoid formulaic prose."
+### 5. Figures and export
 
--> Read the exemplar files first, build multiple section seeds, choose distinct entry moves, and draft from those seeds rather than from one repeating template.
+Generate every figure marked `ready` or required in `table-figure-plan.md`. A full review should normally complete 7-8 figures; a mini or focused review should normally complete 4-5 figures. If the plan records a smaller figure budget, preserve the exception and report it.
+
+If figures are generated:
+
+- use `plot-enhance` before every scientific image-generation call
+- generate the image only through `autor plot` or `autor.plot.generate_plot()` from `autor/plot.py`
+- do not hand-draw figure files with PIL, SVG, HTML canvas, slide shapes, or ad hoc scripts
+- source each figure from the planned citation keys and section evidence
+- save files under `workspace/<name>/figure/`
+- write `workspace/<name>/figure/figure-manifest.json`
+
+Before final export, run:
+
+```bash
+autor ws figure-status <name> --fail-if-missing
+```
+
+Do not promote or export the manuscript while planned figures are missing.
+
+Only after QA passes, promote:
+
+```text
+workspace/<name>/write.md -> workspace/<name>/final.md
+```
+
+Export with Pandoc when requested:
+
+```bash
+cd workspace/<name> && pandoc final.md --citeproc -o final.docx
+```
+
+## Final Output
+
+Return:
+
+```text
+CONTENT_STATUS: APPROVED | REWRITE_FROM_WRITE | RETURN_TO_ORCHESTRATOR | BLOCKED_BY_PLAN | EXPORT_BLOCKED
+WORKSPACE: <name>
+FAILED_STAGE: none | preflight | write | polish | critic | check | figure | export
+CAUSE_CLASS: none | missing_input | plan_gap | evidence | structure | style | citation | figure_failure | export_failure
+REFERENCE_POLICY: references.bib citation keys used throughout
+MANUSCRIPT_FILES:
+- workspace/<name>/write.md
+- workspace/<name>/final.md if created
+- workspace/<name>/final.docx if created
+QA_FILES:
+- workspace/<name>/qa/round-<N>/critic-ticket.md if created
+- workspace/<name>/qa/round-<N>/check-report.md if created
+OPEN_GAPS:
+- <NONE or explicit list>
+NEXT_ACTION: stop | rerun_write | return_orchestrator | export_after_user_approval
+```

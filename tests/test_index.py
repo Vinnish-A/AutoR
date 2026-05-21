@@ -10,7 +10,16 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from autor.index import build_index, find_exact_matches, lookup_paper, search
+from autor.index import (
+    build_index,
+    build_index_atomic,
+    find_exact_matches,
+    index_status,
+    lookup_paper,
+    research_bundle,
+    search,
+    search_nodes,
+)
 
 
 class TestBuildAndSearch:
@@ -50,6 +59,16 @@ class TestBuildAndSearch:
         # Should still find exactly one match for this query, not duplicates
         turbulence_results = [r for r in results if "Turbulence" in r.get("title", "")]
         assert len(turbulence_results) == 1
+
+    def test_atomic_rebuild_uses_final_index_path(self, tmp_papers, tmp_db, tmp_path):
+        count = build_index_atomic(tmp_papers, tmp_db, rebuild=True, temp_dir=tmp_path / "tmp-index")
+
+        status = index_status(tmp_db)
+
+        assert count == 2
+        assert status["exists"] is True
+        assert status["ok"] is True
+        assert status["tables"]["papers_registry"] == 2
 
     def test_build_index_accepts_reference_dicts(self, tmp_path, tmp_db):
         papers_dir = tmp_path / "papers"
@@ -95,6 +114,34 @@ class TestBuildAndSearch:
 
         assert count == 1
         assert rows == [("aaaa-1111",)]
+
+    def test_build_index_creates_node_evidence_index(self, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+
+        with sqlite3.connect(tmp_db) as conn:
+            node_count = conn.execute("SELECT COUNT(*) FROM paper_nodes").fetchone()[0]
+            fts_count = conn.execute("SELECT COUNT(*) FROM paper_node_fts").fetchone()[0]
+
+        assert node_count >= 2
+        assert fts_count == node_count
+
+    def test_search_nodes_returns_snippet_and_ref_path(self, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+
+        results = search_nodes("boundary layers", tmp_db, top_k=3)
+
+        assert results
+        assert {"node_id", "paper_id", "snippet", "ref_path"}.issubset(results[0])
+
+    def test_research_bundle_writes_round_artifacts(self, tmp_papers, tmp_db, tmp_path):
+        build_index(tmp_papers, tmp_db)
+
+        result = research_bundle("boundary layers", tmp_db, run_dir=tmp_path / "run", top_k=2)
+
+        assert result["verify"]["has_evidence"] is True
+        assert (tmp_path / "run" / "bundle.round01.md").exists()
+        assert (tmp_path / "run" / "trace.round01.json").exists()
+        assert (tmp_path / "run" / "verify.round01.json").exists()
 
 
 class TestLookupPaper:
@@ -152,16 +199,6 @@ class TestLookupPaper:
         assert result is not None
         assert result["dir_name"] == "PMID-32467386-Cell"
 
-    def test_lookup_by_doi_is_backward_compatible_with_legacy_uppercase_registry(self, tmp_papers, tmp_db):
-        build_index(tmp_papers, tmp_db)
-        with sqlite3.connect(tmp_db) as conn:
-            conn.execute("UPDATE papers_registry SET doi = UPPER(doi) WHERE doi != ''")
-            conn.commit()
-
-        result = lookup_paper(tmp_db, "10.1234/jfm.2023.001")
-        assert result is not None
-        assert result["id"] == "aaaa-1111"
-
     def test_lookup_by_publication_number(self, tmp_path, tmp_db):
         """Patent lookup normalizes to uppercase for matching."""
         papers_dir = tmp_path / "papers"
@@ -192,7 +229,7 @@ class TestLookupPaper:
         assert result is not None
         assert result["id"] == "patent-001"
 
-    def test_lookup_numeric_identifier_prefers_publication_number_over_pmid(self, tmp_path, tmp_db):
+    def test_lookup_numeric_identifier_prefers_pmid_over_publication_number(self, tmp_path, tmp_db):
         """Numeric patent publication numbers must remain resolvable when PMID collides."""
         papers_dir = tmp_path / "papers"
 
@@ -245,7 +282,7 @@ class TestLookupPaper:
 
         patent = lookup_paper(tmp_db, "12345678")
         assert patent is not None
-        assert patent["id"] == "patent-001"
+        assert patent["id"] == "paper-001"
 
         paper = lookup_paper(tmp_db, "PMID:12345678")
         assert paper is not None

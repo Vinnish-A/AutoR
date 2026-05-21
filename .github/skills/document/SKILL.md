@@ -48,7 +48,6 @@ autor document inspect data.xlsx
 | search + document | 搜索结果 → 表格写入 DOCX/XLSX |
 | literature-review + document | 生成综述内容 → 带 TOC 的正式 Word 文档 |
 | paper-writing + document | 论文章节 → 排版完整的 Word 文件 |
-| topics + document | 主题分析 → 可视化报告（PPTX 幻灯片） |
 
 ---
 
@@ -414,10 +413,10 @@ ws.add_chart(chart, "G2")
    - 用户未指定 → 根据内容性质选择，默认 DOCX
 
 2. **收集内容**：调用其他 skill/CLI 获取数据
-   - `autor search/usearch` — 搜索论文
-   - `autor show --layer 2/3` — 获取摘要/结论
+   - `autor search` — 搜索论文
+   - `autor show --layer 2/3` — 获取摘要/L3 结论卡片
    - `autor top-cited` — 高引论文
-   - `autor topics --topic N` — 主题论文
+   - `autor ws search <name> "<theme>"` — 工作区主题相关论文
    - `autor ws show <name>` — 工作区论文列表
 
 3. **生成图表**（如需要）：用 draw skill 生成 PNG/SVG 到 `workspace/figures/`
@@ -451,7 +450,7 @@ autor export docx --input file.md --output file.docx
 ## 示例
 
 用户说："帮我总结一下文献库，写个简报到 Word 文件"
-→ 调用 `top-cited`、`topics`、`insights` 收集数据 → 写 python-docx 脚本生成带标题、目录、表格、图片的 DOCX
+→ 调用 `top-cited`、`ws search`、`insights` 收集数据 → 写 python-docx 脚本生成带标题、目录、表格、图片的 DOCX
 
 用户说："把 phd-thesis 工作区的论文做成 PPT 给导师汇报"
 → 调用 `ws show phd-thesis` 获取论文列表 → 按主题分组 → 写 python-pptx 脚本生成幻灯片

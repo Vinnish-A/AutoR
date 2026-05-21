@@ -14,15 +14,22 @@ import pytest
 from autor.index import build_index
 from autor.workspace import (
     add,
+    citation_coverage,
+    citation_network,
     create,
     dedup,
     dump_metadata,
+    export_evidence,
     export_metadata,
+    figure_status,
     filter_resolved_by_scope,
+    generate_planning_package,
     identify_exact,
     list_workspaces,
     read_paper_ids,
     rename,
+    screen,
+    status,
     validate_workspace_name,
 )
 
@@ -242,6 +249,202 @@ class TestExportMetadata:
 
         assert "id,dir_name,title,authors,year,journal,paper_type,doi,pmid,publication_number,added_at" in csv_text
         assert "John Smith; Jane Doe" in csv_text
+
+
+class TestWorkspaceEvidence:
+    def test_status_and_evidence_include_l3_and_full_text_state(self, tmp_path, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        smith_meta = tmp_papers / "Smith-2023-Turbulence" / "meta.json"
+        meta = json.loads(smith_meta.read_text(encoding="utf-8"))
+        meta["l3"] = {
+            "mode": "hybrid",
+            "confidence": "high",
+            "takeaway": "Boundary-layer turbulence model improves prediction.",
+            "quantitative_signals": ["12% lower error"],
+        }
+        smith_meta.write_text(json.dumps(meta), encoding="utf-8")
+
+        ws_dir = tmp_path / "workspace" / "evidence-ws"
+        create(ws_dir)
+        add(
+            ws_dir,
+            [],
+            tmp_db,
+            resolved=[
+                {"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"},
+                {"id": "bbbb-2222", "dir_name": "Wang-2024-DeepLearning"},
+            ],
+        )
+
+        payload = status(ws_dir, tmp_papers, tmp_db, include_papers=True)
+        rows = export_evidence(ws_dir, tmp_papers, tmp_db)
+
+        assert payload["count"] == 2
+        assert payload["with_l3"] == 1
+        assert payload["missing_l3"] == 1
+        assert payload["papers"][0]["full_text_status"] == "full_text"
+        assert rows[0]["l3_takeaway"] == "Boundary-layer turbulence model improves prediction."
+        assert rows[0]["l3_quantitative_signals"] == ["12% lower error"]
+
+    def test_screen_scores_and_can_apply_removals(self, tmp_path, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        ws_dir = tmp_path / "workspace" / "screen-ws"
+        create(ws_dir)
+        add(
+            ws_dir,
+            [],
+            tmp_db,
+            resolved=[
+                {"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"},
+                {"id": "bbbb-2222", "dir_name": "Wang-2024-DeepLearning"},
+            ],
+        )
+
+        result = screen(ws_dir, tmp_papers, tmp_db, criteria="turbulence boundary layers", target_count=1, apply=True)
+
+        assert result["retained_count"] == 1
+        assert result["removed_count"] == 1
+        assert read_paper_ids(ws_dir) == {"aaaa-1111"}
+
+    def test_generate_planning_package_writes_canonical_files(self, tmp_path, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        ws_dir = tmp_path / "workspace" / "plan-ws"
+        create(ws_dir)
+        add(ws_dir, [], tmp_db, resolved=[{"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"}])
+
+        result = generate_planning_package(
+            ws_dir,
+            tmp_papers,
+            tmp_db,
+            title="Boundary-layer turbulence review",
+            criteria="boundary layer turbulence",
+        )
+
+        assert result["count"] == 1
+        for name in ["references.bib", "reference-map.json", "review-plan.md", "evidence-ledger.md", "table-figure-plan.md"]:
+            assert (ws_dir / name).exists()
+        refmap = json.loads((ws_dir / "reference-map.json").read_text(encoding="utf-8"))
+        assert refmap["references"][0]["autor_id"] == "aaaa-1111"
+        assert refmap["references"][0]["citation_policy"] == "cite_if_relevant"
+        assert refmap["references"][0]["citekey"] in (ws_dir / "references.bib").read_text(encoding="utf-8")
+        assert "PlotEnhance" in (ws_dir / "table-figure-plan.md").read_text(encoding="utf-8")
+
+    def test_citation_coverage_reports_missing_required_keys(self, tmp_path, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        ws_dir = tmp_path / "workspace" / "coverage-ws"
+        create(ws_dir)
+        add(
+            ws_dir,
+            [],
+            tmp_db,
+            resolved=[
+                {"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"},
+                {"id": "bbbb-2222", "dir_name": "Wang-2024-DeepLearning"},
+            ],
+        )
+        generate_planning_package(ws_dir, tmp_papers, tmp_db, title="Coverage review")
+        refmap = json.loads((ws_dir / "reference-map.json").read_text(encoding="utf-8"))
+        refmap["references"][0]["citation_policy"] = "must_cite"
+        refmap["references"][1]["citation_policy"] = "must_cite"
+        (ws_dir / "reference-map.json").write_text(json.dumps(refmap), encoding="utf-8")
+        (ws_dir / "final.md").write_text(f"Only one source [@{refmap['references'][0]['citekey']}].", encoding="utf-8")
+
+        result = citation_coverage(ws_dir, require="must_cite")
+
+        assert result["required_count"] == 2
+        assert result["missing_required_count"] == 1
+        assert result["missing_required"][0]["citekey"] == refmap["references"][1]["citekey"]
+
+    def test_citation_coverage_counts_excluded_but_citable_references(self, tmp_path, tmp_papers, tmp_db):
+        build_index(tmp_papers, tmp_db)
+        ws_dir = tmp_path / "workspace" / "citable-ws"
+        create(ws_dir)
+        add(
+            ws_dir,
+            [],
+            tmp_db,
+            resolved=[
+                {"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"},
+                {"id": "bbbb-2222", "dir_name": "Wang-2024-DeepLearning"},
+            ],
+        )
+        generate_planning_package(ws_dir, tmp_papers, tmp_db, title="Citable review")
+        refmap = json.loads((ws_dir / "reference-map.json").read_text(encoding="utf-8"))
+        refmap["references"][1]["status"] = "excluded"
+        refmap["references"][1]["bibliographic_validity"] = "citable"
+        refmap["references"][1]["review_use"] = "conflicting_evidence"
+        (ws_dir / "reference-map.json").write_text(json.dumps(refmap), encoding="utf-8")
+        (ws_dir / "final.md").write_text(
+            f"Only the retained source is cited [@{refmap['references'][0]['citekey']}].",
+            encoding="utf-8",
+        )
+
+        result = citation_coverage(ws_dir, require="citable")
+
+        assert result["required_count"] == 2
+        assert result["missing_required_count"] == 1
+        assert result["missing_required"][0]["review_use"] == "conflicting_evidence"
+
+    def test_citation_network_exports_internal_and_shared_edges(self, tmp_path, tmp_papers, tmp_db):
+        smith_meta = tmp_papers / "Smith-2023-Turbulence" / "meta.json"
+        smith = json.loads(smith_meta.read_text(encoding="utf-8"))
+        smith["references"] = ["10.5678/dl.2024.001", "10.1000/classic"]
+        smith_meta.write_text(json.dumps(smith), encoding="utf-8")
+
+        wang_meta = tmp_papers / "Wang-2024-DeepLearning" / "meta.json"
+        wang = json.loads(wang_meta.read_text(encoding="utf-8"))
+        wang["doi"] = "10.5678/dl.2024.001"
+        wang["references"] = ["10.1000/classic"]
+        wang_meta.write_text(json.dumps(wang), encoding="utf-8")
+
+        build_index(tmp_papers, tmp_db)
+        ws_dir = tmp_path / "workspace" / "network-ws"
+        create(ws_dir)
+        add(
+            ws_dir,
+            [],
+            tmp_db,
+            resolved=[
+                {"id": "aaaa-1111", "dir_name": "Smith-2023-Turbulence"},
+                {"id": "bbbb-2222", "dir_name": "Wang-2024-DeepLearning"},
+            ],
+        )
+        generate_planning_package(ws_dir, tmp_papers, tmp_db, title="Network review")
+
+        result = citation_network(ws_dir, tmp_db, min_shared=2)
+
+        assert result["status"] == "completed"
+        assert result["summary"]["internal_edge_count"] == 1
+        assert result["summary"]["shared_reference_count"] == 1
+        assert result["shared_references"][0]["target_doi"] == "10.1000/classic"
+
+    def test_figure_status_reports_missing_and_completed_exports(self, tmp_path):
+        ws_dir = tmp_path / "workspace" / "figure-ws"
+        create(ws_dir)
+        (ws_dir / "table-figure-plan.md").write_text(
+            "# Table and Figure Plan\n\n"
+            "## Figures\n"
+            "| Figure ID | Title | Type | Section slot | Visual thesis | Source sections | Required citekeys | Trial IDs | PlotEnhance | Status |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n"
+            "| F1 | Overview | Conceptual | S1 | Thesis | S1 | Smith2023 | none | required | ready |\n",
+            encoding="utf-8",
+        )
+
+        missing = figure_status(ws_dir)
+        assert missing["missing_count"] == 1
+
+        fig_dir = ws_dir / "figure"
+        fig_dir.mkdir()
+        fig = fig_dir / "F1-overview.png"
+        fig.write_bytes(b"png")
+        (fig_dir / "figure-manifest.json").write_text(
+            json.dumps({"figures": [{"figure_id": "F1", "files": [str(fig)]}]}),
+            encoding="utf-8",
+        )
+
+        complete = figure_status(ws_dir)
+        assert complete["missing_count"] == 0
+        assert complete["figures"][0]["manifested"] is True
 
 
 class TestRenameWorkspace:

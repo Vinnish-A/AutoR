@@ -1,33 +1,40 @@
 # Search & Browse
 
-AutoR provides multiple search modes to find papers in your knowledge base.
+AutoR search is now non-vector and auditable. `autor index` builds a
+node-level SQLite FTS5 index from metadata plus full-text `paper.md` chunks.
+Search results keep evidence snippets and source paths; `autor research`
+writes a bounded evidence bundle with machine-readable trace/verify files.
 
 ## Search Modes
 
-### Keyword Search (FTS5)
+### Auditable Search
 
 ```bash
 autor search "turbulent boundary layer"
+autor search "Reynolds stress modeling"
 ```
 
-Searches title, abstract, and conclusion using SQLite FTS5 full-text search.
+`search` uses the deterministic node-level FTS5 path and aggregates evidence
+nodes back to paper-level results.
 
-### Semantic Search
+### Evidence Bundle
 
 ```bash
-autor vsearch "methods for predicting flow separation"
+autor research "What evidence supports Reynolds stress modeling?" \
+  --run-dir workspace/runs/reynolds-stress
 ```
 
-Uses FAISS over the configured semantic embeddings. On the main library this is
-chunk-aware retrieval over full `paper.md`, aggregated back to paper-level hits.
+This writes:
 
-### Unified Search (Fusion)
+- `bundle.roundNN.md`
+- `bundle.md`
+- `bundle.json`
+- `trace.roundNN.json`
+- `verify.roundNN.json`
+- append-only `trace.jsonl`
 
-```bash
-autor usearch "Reynolds stress modeling"
-```
-
-Combines keyword and semantic results using Reciprocal Rank Fusion (RRF).
+Answer from the bundle, preserve the references section, and rerun with a
+revised query if `verify.roundNN.json` reports insufficient evidence.
 
 ### Author Search
 
@@ -36,8 +43,6 @@ autor search-author "Smith"
 ```
 
 ## Viewing Papers
-
-Load paper content at different detail levels:
 
 ```bash
 autor show <paper-id> --layer 1  # metadata
@@ -48,7 +53,7 @@ autor show <paper-id> --layer 4  # full text
 
 ## Filtering
 
-All search commands support filters:
+Search commands support filters:
 
 ```bash
 autor search "turbulence" --year 2020-2024 --journal "JFM" --type review

@@ -66,7 +66,7 @@ def setup(cfg: Config) -> str:
     root.addHandler(ch)
 
     # Suppress noisy third-party loggers
-    for name in ("httpx", "urllib3", "modelscope", "httpcore", "sentence_transformers"):
+    for name in ("httpx", "urllib3", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     _initialized = True

@@ -5,6 +5,8 @@
       members:
         - build_index
         - search
+        - search_nodes
+        - research_bundle
 
 ::: autor.loader
     options:
@@ -32,6 +34,10 @@
         - remove
         - list_workspaces
         - read_paper_ids
+        - status
+        - export_evidence
+        - screen
+        - generate_planning_package
 
 ::: autor.papers
     options:

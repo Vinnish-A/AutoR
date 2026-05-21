@@ -19,8 +19,6 @@ Read the output to see which components are ready and which are missing.
 
 ### Missing dependencies
 - Tell the user which dependencies are absent and explain what each group is used for:
-  - `embed`: semantic vector search (Qwen3 embedding model)
-  - `topics`: BERTopic topic modeling
   - `import`: Endnote / Zotero import
   - `full`: all features
 - Run `pip install -e ".[full]"` or install selectively
@@ -45,4 +43,4 @@ After configuration, run `autor setup check` again to confirm all items show [OK
 
 - The user can also run `autor setup` directly to enter the interactive wizard (bilingual EN/ZH)
 - `config.local.yaml` stores sensitive information (API keys) and is not tracked by git
-- The embedding model (~1.2 GB) is downloaded automatically on the first `embed`/`vsearch` call; setup does not trigger a download
+- AutoR no longer downloads embedding models or builds FAISS/vector storage

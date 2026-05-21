@@ -48,10 +48,9 @@ ingest:
   # Other options: auto, regex, llm
 ```
 
-### Embedding Source
+### Search
 
 ```yaml
-embed:
-  source: huggingface  # default
-  # source: modelscope  # only if your target model is mirrored there
+search:
+  top_k: 20  # default paper-level results for node-level FTS5 search
 ```

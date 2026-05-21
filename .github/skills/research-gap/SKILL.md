@@ -1,6 +1,6 @@
 ---
 name: research-gap
-description: Identify research gaps and open questions from the literature in a workspace. Combines topic clustering, citation analysis, and cross-paper comparison. Use when the user wants to find unexplored areas, formulate research questions, or assess where the field is heading.
+description: Identify research gaps and open questions from the literature in a workspace. Combines auditable search, citation analysis, and cross-paper comparison. Use when the user wants to find unexplored areas, formulate research questions, or assess where the field is heading.
 ---
 
 # Research Gap Identification
@@ -18,17 +18,17 @@ Report language is specified by the user (English or Chinese).
 
 ```bash
 autor ws show <name>                    # paper list
-autor topics                             # topic clustering (if model already built)
+autor ws search <name> "<broad theme>"   # auditable node-level field scan
 ```
 
 Perform an L2 scan (title + abstract) on workspace papers to build a field map.
 
 ### 2. Multi-Dimensional Analysis
 
-#### Dimension 1: Topic Coverage
+#### Dimension 1: Theme Coverage
 ```bash
-autor topics                             # overall topic distribution
-autor topics --topic <ID>                # papers in each topic
+autor ws search <name> "<theme keywords>"
+autor research "<theme or gap question>" --run-dir workspace/<name>/runs/<case>
 ```
 Are workspace papers concentrated in a few topics? Which related topics lack coverage?
 
@@ -41,9 +41,9 @@ Tally workspace papers by year to identify:
 Use Python to read `data/papers/*/meta.json` directly for statistical analysis.
 
 #### Dimension 3: Methodological Comparison
-Scan the methods sections of workspace papers (L3–L4) to construct a methodology matrix:
+Scan L3/L4 of workspace papers to construct a methodology matrix:
 ```bash
-autor show <dir_name> --level 3          # conclusions often mention methods
+autor show <dir_name> --level 3          # L3 gives paper-level takeaway, key findings, quantitative signals, and limitations when available
 ```
 - Which methods are widely used?
 - Which method combinations have not yet been tried?
@@ -60,13 +60,13 @@ autor citing "<id>"                      # papers that cite this one
 - Which key references are absent from the workspace? (possible blind spots)
 
 #### Dimension 5: Author-Stated Future Work
-Load L3 (conclusion) of highly cited workspace papers and extract future directions the authors themselves proposed:
+Load L3 of highly cited workspace papers and extract future directions, limitations, and unresolved questions. If L3 mode is `inferred_synthesis`, verify author-stated future work in L4 before treating it as the authors' own proposal:
 ```bash
 autor show <dir_name> --level 3
 ```
 Have those future directions been addressed? Cross-search to verify:
 ```bash
-autor usearch "<future work keywords>"
+autor search "<future work keywords>"
 ```
 
 ### 3. Output Report
@@ -108,4 +108,4 @@ User says: "Find research gaps in the drag-review workspace."
 → Comprehensively scan the literature, multi-dimensional analysis, generate research-gap report
 
 User says: "What future work directions did these papers mention? Has anyone followed up?"
-→ Extract future-work statements from each paper's conclusion, then cross-search to verify
+→ Extract future-work, limitation, and unresolved-question signals from each paper's L3 card, then cross-search and verify in L4 when needed

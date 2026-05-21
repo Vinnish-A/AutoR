@@ -30,7 +30,7 @@ Apply a three-layer check to every citation:
 **Layer 1 — Local library match**
 ```bash
 autor search-author "<Author>" --top 5
-autor usearch "<keywords from title>" --top 5
+autor search "<keywords from title>" --top 5
 ```
 After finding a match in the local library, verify: author names, year, title, and journal are consistent.
 
@@ -43,7 +43,7 @@ For key citations (those supporting core claims), load L2–L3:
 ```bash
 autor show <dir_name> --level 3
 ```
-Verify: does the text's description of the paper match the paper's actual content? Is there over-interpretation or selective quotation?
+Verify: does the text's description of the paper match the paper's actual content? Is there over-interpretation or selective quotation? If L3 is `inferred_synthesis`, use it as a triage signal and verify high-stakes claims against L4/source text.
 
 ### 3. Output Report
 

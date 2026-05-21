@@ -35,13 +35,13 @@ For each comment:
 3. Search the workspace literature for supporting evidence:
    ```bash
    autor ws search <name> "<keywords from reviewer concern>"
-   autor show <dir_name> --level 3      # read conclusion for evidence
+   autor show <dir_name> --level 3      # read L3 conclusion card for orientation and evidence triage
    autor show <dir_name> --level 4      # read full text if needed
    ```
 4. Find additional support from the citation graph:
    ```bash
    autor refs "<id>"                    # references of relevant papers
-   autor usearch "<supplementary keywords>"  # search full library
+   autor search "<supplementary keywords>"  # search full library
    ```
 
 ### 3. Draft the Response
@@ -63,7 +63,7 @@ Response strategies:
 - **Additional experiments/analysis**: describe the new content and results
 
 **Multi-modal support**:
-- When a reviewer questions a figure, read the original image from the paper (`images/`) and re-analyze
+- When a reviewer questions a figure, use the user-provided source figure or published source outside MinerU; autor ingest does not retain `images/` attachments
 - When a reviewer questions a numerical value, write Python code to independently reproduce the calculation and use the output as evidence
 - When a reviewer questions a derivation, read the relevant formulas from the paper and verify step by step
 

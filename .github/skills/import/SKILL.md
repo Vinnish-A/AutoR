@@ -10,7 +10,7 @@ description: Import papers from external reference managers (Endnote XML/RIS, Zo
 Supports Endnote export files in XML and RIS formats.
 
 ```bash
-# Full import: metadata + PDF matching + MinerU batch conversion + enrich (toc/l3/abstract) + embed + index
+# Full import: metadata + PDF matching + MinerU batch conversion + enrich (toc/l3/abstract) + FTS5 index
 autor import-endnote <file.xml>
 
 # Import multiple files
@@ -37,10 +37,10 @@ For Endnote XML files, automatically parses `internal-pdf://` links and matches 
 Default behavior (without `--no-convert`) automatically runs the full pipeline after import:
 1. **Batch PDF→MD**: cloud mode uses `convert_pdfs_cloud_batch()` for batch conversion (per-token batch size controlled by `config.yaml` `ingest.mineru_cloud_batch_size`, default 20)
 2. **Abstract backfill**: extracts missing abstracts from the Markdown
-3. **TOC + L3 extraction**: LLM extracts table of contents and conclusion sections
-4. **Embed + Index**: updates semantic vectors and full-text index
+3. **TOC + L3 generation**: LLM extracts table of contents and generates L3 paper-level conclusion cards, using inferred synthesis when no explicit conclusion section exists
+4. **Index**: updates the node-level FTS5 evidence index. Vector/FAISS storage is no longer built.
 
-Use `--no-convert` to skip all post-processing (imports metadata + copies PDFs + embed + index only).
+Use `--no-convert` to skip post-processing (imports metadata + copies PDFs + FTS5 index only).
 
 ## Zotero Import
 
@@ -84,7 +84,7 @@ zotero:
 autor attach-pdf <paper-id> <path/to/paper.pdf>
 ```
 
-Automatically calls MinerU to convert the PDF to Markdown, backfills any missing abstract, and incrementally updates the embed + index.
+Automatically calls MinerU to convert the PDF to Markdown, backfills any missing abstract, and incrementally updates the node-level FTS5 evidence index.
 
 ## Batch PDF Conversion for Already-Ingested Papers
 
@@ -98,4 +98,4 @@ cfg = load_config()
 stats = batch_convert_pdfs(cfg, enrich=True)
 ```
 
-Automatically scans `data/papers/` for papers that have a PDF but no paper.md, runs batch cloud API conversion, then runs abstract backfill + toc + l3 + embed + index.
+Automatically scans `data/papers/` for papers that have a PDF but no paper.md, runs MinerU conversion, then runs abstract backfill + toc + l3 + node-level FTS5 indexing.

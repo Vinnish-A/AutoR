@@ -77,7 +77,6 @@ class TestBuildConfig:
         assert cfg.ingest.extractor == "robust"
         assert cfg.ingest.chunk_page_limit == 100
         assert cfg.ingest.mineru_cloud_batch_size == 20
-        assert cfg.ingest.mineru_batch_size == 20
 
     def test_plot_defaults(self, tmp_path):
         cfg = _build_config({}, tmp_path)
@@ -107,48 +106,16 @@ class TestBuildConfig:
         assert cfg.ingest.mineru_enable_formula is True
         assert cfg.ingest.mineru_enable_table is True
 
-    def test_embed_env_vars_override_yaml(self, tmp_path, monkeypatch):
+    def test_removed_vector_sections_are_ignored(self, tmp_path, monkeypatch):
         data = {
-            "embed": {
-                "source": "modelscope",
-                "cache_dir": "/yaml-cache",
-                "model": "yaml-model",
-            }
+            "embed": {"model": "legacy-model"},
+            "topics": {"model_dir": "data/topic_model"},
         }
-        monkeypatch.setenv("AUTOR_EMBED_SOURCE", "huggingface")
-        monkeypatch.setenv("AUTOR_EMBED_CACHE_DIR", "/env-cache")
         monkeypatch.setenv("AUTOR_EMBED_MODEL", "env-model")
+        monkeypatch.setenv("AUTOR_HF_ENDPOINT", "https://mirror.example")
         cfg = _build_config(data, tmp_path)
-        assert cfg.embed.source == "huggingface"
-        assert cfg.embed.cache_dir == "/env-cache"
-        assert cfg.embed.model == "env-model"
-
-    def test_autor_hf_endpoint_wins_over_hf_endpoint(self, tmp_path, monkeypatch):
-        data = {"embed": {"hf_endpoint": "https://yaml-mirror.example"}}
-        monkeypatch.setenv("AUTOR_HF_ENDPOINT", "https://autor-mirror.example")
-        monkeypatch.setenv("HF_ENDPOINT", "https://generic-mirror.example")
-        cfg = _build_config(data, tmp_path)
-        assert cfg.embed.hf_endpoint == "https://autor-mirror.example"
-
-    def test_empty_embed_env_vars_do_not_override_yaml(self, tmp_path, monkeypatch):
-        data = {
-            "embed": {
-                "source": "huggingface",
-                "cache_dir": "/yaml-cache",
-                "model": "yaml-model",
-                "hf_endpoint": "https://yaml-mirror.example",
-            }
-        }
-        monkeypatch.setenv("AUTOR_EMBED_SOURCE", "")
-        monkeypatch.setenv("AUTOR_EMBED_CACHE_DIR", "")
-        monkeypatch.setenv("AUTOR_EMBED_MODEL", "")
-        monkeypatch.setenv("AUTOR_HF_ENDPOINT", "")
-        monkeypatch.setenv("HF_ENDPOINT", "")
-        cfg = _build_config(data, tmp_path)
-        assert cfg.embed.source == "huggingface"
-        assert cfg.embed.cache_dir == "/yaml-cache"
-        assert cfg.embed.model == "yaml-model"
-        assert cfg.embed.hf_endpoint == "https://yaml-mirror.example"
+        assert not hasattr(cfg, "embed")
+        assert not hasattr(cfg, "topics")
 
     def test_plot_env_vars_override_yaml(self, tmp_path, monkeypatch):
         data = {
@@ -185,11 +152,6 @@ class TestConfigProperties:
     def test_metrics_db_path(self, tmp_path):
         cfg = _build_config({}, tmp_path)
         assert cfg.metrics_db_path == (tmp_path / "data" / "metrics.db").resolve()
-
-    def test_topics_model_dir(self, tmp_path):
-        cfg = _build_config({}, tmp_path)
-        assert cfg.topics_model_dir == (tmp_path / "data" / "topic_model").resolve()
-
 
 class TestEnsureDirs:
     def test_creates_required_dirs(self, tmp_path):
@@ -243,11 +205,6 @@ class TestResolvedApiKey:
         for v in ("AUTOR_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
             monkeypatch.delenv(v, raising=False)
         assert cfg.resolved_api_key() == ""
-
-    def test_mineru_key_from_config(self, tmp_path):
-        cfg = _build_config({"ingest": {"mineru_api_key": "mu-key"}}, tmp_path)
-        assert cfg.resolved_mineru_api_key() == "mu-key"
-        assert cfg.resolved_mineru_api_keys() == ["mu-key"]
 
     def test_mineru_keys_from_config_list(self, tmp_path):
         cfg = _build_config({"ingest": {"mineru_api_keys": ["mu-key-1", "mu-key-2"]}}, tmp_path)
@@ -335,7 +292,7 @@ class TestLoadConfig:
 
     def test_mineru_tokens_from_config_yaml_are_ignored(self, tmp_path):
         (tmp_path / "config.yaml").write_text(
-            "ingest:\n  mineru_api_keys:\n    - tracked-secret\n  mineru_api_key: tracked-single\n",
+            "ingest:\n  mineru_api_keys:\n    - tracked-secret\n",
             encoding="utf-8",
         )
         cfg = load_config(tmp_path / "config.yaml")

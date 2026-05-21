@@ -11,7 +11,7 @@ def test_check_dep_group_treats_runtime_import_failure_as_missing(monkeypatch):
     original = importlib.import_module
 
     def fake_import(name: str, package=None):
-        if name == "bertopic":
+        if name == "pyzotero":
             raise RuntimeError("numba cache failure")
         if package is None:
             return original(name)
@@ -19,7 +19,7 @@ def test_check_dep_group_treats_runtime_import_failure_as_missing(monkeypatch):
 
     monkeypatch.setattr(importlib, "import_module", fake_import)
 
-    status = check_dep_group("topics")
+    status = check_dep_group("import")
 
     assert not status.installed
-    assert "bertopic" in status.missing
+    assert "pyzotero" in status.missing

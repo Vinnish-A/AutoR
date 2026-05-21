@@ -1,9 +1,14 @@
 # autor Practical Workflow Guide
 
+> Migration note (2026-05-19): AutoR has removed vector/RAG storage. Any older
+> mentions of `autor embed`, `vsearch`, FAISS, semantic vectors, or hybrid
+> keyword+vector retrieval should be read as historical. Current search uses
+> node-level SQLite FTS5 and `autor research` evidence bundles.
+
 This guide is for anyone who has cloned autor locally and plans to use it long term. It focuses on four practical questions:
 
 1. How to start the local services
-2. How to batch-convert PDFs in the inbox to Markdown and index them in the search/vector database
+2. How to batch-convert PDFs in the inbox to Markdown and update the fast FTS5 search index
 3. How to add papers on a specific topic to a workspace
 4. How to organize writing inside a workspace
 
@@ -89,7 +94,7 @@ By default, autor will try to connect to:
 http://localhost:8000
 ```
 
-If local MinerU is not running, but `ingest.mineru_api_keys` is configured in `config.local.yaml` or `MINERU_API_KEYS` is set in the environment, autor automatically falls back to cloud conversion.
+In the default `hybrid` mode, a running local MinerU endpoint and all configured cloud tokens work as parallel sources during batch PDF conversion. If local MinerU is not running, but `ingest.mineru_api_keys` is configured in `config.local.yaml` or `MINERU_API_KEYS` is set in the environment, autor falls back to cloud-only conversion.
 
 ### 1.4 When You Do Not Need to Start a "Server"
 
@@ -109,7 +114,7 @@ In other words:
 
 ---
 
-## 2. How to Batch-Convert Inbox PDFs into Markdown and a Vectorized Database
+## 2. How to Batch-Convert Inbox PDFs into Markdown and a Searchable Database
 
 ### 2.0 Recommended Flow for Importing a Specific Zotero Collection from Local SQLite
 
@@ -128,7 +133,7 @@ Then inside WSL it should be written as:
 One important point often causes confusion:
 
 - the built-in `import-zotero` flow is **not** “import into inbox first, then run ingest”
-- instead, it **imports directly into `data/papers/`, then automatically handles PDF → Markdown conversion, TOC extraction, L3 extraction, embeddings, and indexing**
+- instead, it **imports directly into `data/papers/`, then automatically handles PDF → Markdown conversion, TOC extraction, L3 generation, and FTS5 indexing**
 
 So if you use the built-in Zotero import command, you usually **do not** need to manually shuttle files into `data/inbox/`.
 
@@ -167,10 +172,10 @@ By default this command runs the full workflow:
 4. Batch-convert PDFs into `paper.md`.
 5. Backfill abstracts.
 6. Extract TOC.
-7. Extract L3.
-8. Update embeddings and the search index.
+7. Generate L3 paper-level conclusion cards.
+8. Update the FTS5 search index.
 
-In other words, if you do not add `--no-convert`, this single step already covers “import + Markdown conversion + TOC/L3 extraction + indexing.”
+In other words, if you do not add `--no-convert`, this single step already covers “import + Markdown conversion + TOC/L3 generation + FTS5 indexing.” Semantic vectors are intentionally not built by default; run `autor embed` only when you need semantic/vector search or topics.
 
 #### Step 3: If You Only Want to Import First and Convert Later
 
@@ -188,7 +193,7 @@ After that:
 - entries are placed into `data/papers/`
 - PDFs are copied into the corresponding paper directories
 - but `paper.md` is not generated yet
-- and TOC/L3 are not extracted automatically
+- and TOC/L3 are not generated automatically
 
 If you later want to complete the conversion in one batch, the recommended approach is to run the built-in Python batch job:
 
@@ -210,8 +215,8 @@ The `enrich=True` flag is important. It means:
 
 - convert `paper.md`
 - automatically extract `TOC`
-- automatically extract `L3`
-- then rebuild vectors and the full-text index
+- automatically generate `L3`
+- then update the FTS5 full-text index
 
 #### Step 4: If You Insist on Using “Inbox First, Then Ingest”
 
@@ -263,7 +268,7 @@ autor import-zotero \
   --collection <COLLECTION_KEY>
 ```
 
-#### How to Confirm That TOC and L3 Were Extracted After Import
+#### How to Confirm That TOC and L3 Were Generated After Import
 
 You can check a paper with:
 
@@ -271,7 +276,7 @@ You can check a paper with:
 autor show "<paper-id>" --layer 3
 ```
 
-If you want to force TOC and L3 extraction for all ingested papers:
+If you want to force TOC and L3 generation for all ingested papers:
 
 ```bash
 autor pipeline enrich --force
@@ -305,19 +310,24 @@ This preset runs:
 - `extract`: metadata extraction
 - `dedup`: DOI-based deduplication
 - `ingest`: write into `data/papers/`
-- `embed`: generate vectors
-- `index`: update the SQLite search database
+- `l3`: generate the L3 paper-level conclusion card
+- `index`: update the FTS5 search database
 
-If you also want TOC extraction and conclusion extraction in the same pass, use:
+It does not build semantic vectors by default. This saves time during ordinary ingest. If you later need semantic/vector search or topic modeling, run:
+
+```bash
+autor embed
+```
+
+If you also want an explicit TOC saved before/alongside L3 generation, use:
 
 ```bash
 autor pipeline full
 ```
 
-Compared with `ingest`, `full` adds two more steps:
+Compared with `ingest`, `full` adds:
 
 - `toc`
-- `l3`
 
 ### 2.3 Recommended Batch Processing Routine
 
@@ -387,11 +397,11 @@ If you suspect the index is inconsistent, run:
 autor pipeline reindex
 ```
 
-### 2.5.1 How to Extract TOC and L3 When Re-Ingesting or Repairing `paper.md`
+### 2.5.1 How to Extract TOC and Generate L3 When Re-Ingesting or Repairing `paper.md`
 
 There are three different cases here.
 
-#### Case A: You Just Finished a Normal Ingest but Only Ran `ingest`
+#### Case A: You Just Finished a Normal Ingest and Want Explicit TOC Backfill
 
 The best follow-up is:
 
@@ -399,11 +409,10 @@ The best follow-up is:
 autor pipeline enrich
 ```
 
-This adds the following for already ingested papers:
+This adds or refreshes the following for already ingested papers:
 
 - `toc`
 - `l3`
-- `embed`
 - `index`
 
 To force re-extraction:
@@ -437,8 +446,8 @@ The companion script [repair_missing_md_entries.py](/mnt/f/autor/repair_missing_
 - reconvert the existing PDF into `paper.md`
 - backfill `abstract`
 - extract `TOC`
-- extract `L3`
-- rebuild `embed` and `index`
+- generate `L3`
+- rebuild the FTS5 index
 
 Run it directly with:
 
@@ -448,7 +457,7 @@ source .venv/bin/activate
 python repair_missing_md_entries.py
 ```
 
-If you do **not** want TOC and L3 extracted during the repair, disable enrichment explicitly:
+If you do **not** want TOC and L3 generated during the repair, disable enrichment explicitly:
 
 ```bash
 python repair_missing_md_entries.py --no-enrich
@@ -458,10 +467,10 @@ Here `L3` means “level-3 content loading,” not a model name:
 
 - `L1`: metadata
 - `L2`: abstract
-- `L3`: conclusion section
+- `L3`: paper-level conclusion card
 - `L4`: full Markdown text
 
-So “extract L3” simply means pulling the conclusion section out of the paper and writing it back into `meta.json`.
+So “generate L3” means writing a structured paper-level takeaway to `meta.json`. It uses an explicit conclusion/summary section when present, otherwise it can synthesize from abstract, results, discussion, figure captions, and table captions. The structured field records mode, source spans, key findings, quantitative signals, limitations, and warnings when available.
 
 ### 2.6 Minimal Python Usage If You Only Want to Call the API Programmatically
 
@@ -625,6 +634,8 @@ autor pipeline ingest
 autor audit
 autor pipeline reindex
 ```
+
+Only add `autor embed` to this routine when you explicitly need semantic/vector search or topic modeling.
 
 ---
 
@@ -861,7 +872,7 @@ From the skill design and directory conventions, it is clear that the author wan
 
 ### 5.4 Intent Four: Progressive Information Loading to Reduce Noise
 
-The L1–L4 loading model shows that the author does **not** want an agent to swallow the whole paper immediately. The intended order is metadata first, then abstract, then conclusion, and only finally the full text. That is designed to:
+The L1–L4 loading model shows that the author does **not** want an agent to swallow the whole paper immediately. The intended order is metadata first, then abstract, then L3 paper-level takeaway, and only finally the full text. That is designed to:
 
 - reduce token and cognitive load
 - preserve efficiency from retrieval through writing

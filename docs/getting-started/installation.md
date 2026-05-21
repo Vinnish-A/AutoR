@@ -14,7 +14,7 @@ cd AutoR
 # Core only (search, export, audit)
 pip install -e .
 
-# Full installation (embeddings, topics, import)
+# Full installation (import/office/pdf extras)
 pip install -e ".[full]"
 ```
 
@@ -22,8 +22,6 @@ pip install -e ".[full]"
 
 | Extra | What it adds |
 |-------|-------------|
-| `embed` | Semantic search (sentence-transformers + FAISS) |
-| `topics` | BERTopic topic modeling |
 | `import` | Endnote / Zotero import |
 | `full` | All of the above |
 | `dev` | Development tools (pytest, ruff, mypy) |
@@ -54,6 +52,8 @@ That guide separates:
 - registering AutoR for use from another project
 - choosing between native skills and plugins
 
-## Embedding Model
+## Search Index
 
-The default embedding model is `Alibaba-NLP/gte-Qwen2-1.5B-instruct`. On the main library, `autor embed` reads full `paper.md`, performs overlapping markdown chunking, and builds chunk-level retrieval vectors. The `autor[embed]` extra now pins `transformers>=4.41.2,<4.42` for compatibility with the model's remote Qwen2 code. For users outside China, set `embed.source: huggingface` in `config.yaml`.
+AutoR no longer installs embedding or FAISS dependencies. Run `autor index` to
+build the node-level SQLite FTS5 evidence index, then use `autor search` or
+`autor research`.

@@ -1,35 +1,44 @@
 ---
 name: index
-description: Rebuild FTS5 full-text search index or FAISS semantic vector index. Use when the user wants to update or rebuild search indexes after metadata changes.
+description: Rebuild the node-level SQLite FTS5 evidence index. Use when the user asks to rebuild search, refresh search after metadata/full-text changes, or repair missing search results.
 ---
 
-# Rebuild Indexes
+# Rebuild Index
 
-Rebuild the FTS5 full-text search index or the FAISS semantic vector index.
+AutoR no longer builds FAISS or embedding storage. `autor index` builds:
+
+- paper-level metadata/registry tables
+- citation graph tables
+- `paper_nodes`
+- `paper_node_fts` for auditable evidence retrieval
 
 ## Execution Logic
 
-**Incrementally update the FTS5 full-text index:**
+**Incrementally update the evidence index:**
 ```bash
 autor index
 ```
 
-**Fully rebuild the FTS5 full-text index:**
+**Fully rebuild the evidence index:**
 ```bash
 autor index --rebuild
 ```
 
-**Incrementally update the semantic vector index:**
+Full rebuilds use a temporary SQLite database by default, then replace
+`data/index.db` after a successful build. This avoids long WAL writes on
+Windows-mounted WSL paths. Use `--direct` only for diagnosis.
+
+**Check index health without rebuilding:**
 ```bash
-autor embed
+autor index --status
 ```
 
-**Fully rebuild the semantic vector index:**
+**Queue a rebuild in the background:**
 ```bash
-autor embed --rebuild
+autor index --rebuild --background
 ```
 
-**Update both:**
+**Pipeline preset:**
 ```bash
 autor pipeline reindex
 ```
@@ -37,10 +46,10 @@ autor pipeline reindex
 ## Examples
 
 User says: "Rebuild the index."
-→ Run `pipeline reindex`
+→ Run `autor index --rebuild`
 
-User says: "Rebuild only the full-text index."
-→ Run `index --rebuild`
+User says: "Search results look stale after editing paper.md."
+→ Run `autor index --rebuild`
 
 User says: "Update the vectors."
-→ Run `embed`
+→ Explain vector storage has been removed, then run `autor index --rebuild` if they meant search refresh.

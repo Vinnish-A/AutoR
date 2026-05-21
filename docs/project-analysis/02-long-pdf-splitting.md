@@ -54,9 +54,9 @@ If > PAGE_LIMIT → split into multiple page ranges of PAGE_LIMIT size
     ↓
 Run MinerU on each chunk (reusing start_page/end_page support where applicable)
     ↓
-Merge all Markdown + images
+Merge Markdown and strip image references
     ↓
-Output a single paper.md + merged images/
+Output a single paper.md without image artifacts
     ↓
 Continue through the normal pipeline (extract → dedup → ingest)
 ```
@@ -195,28 +195,15 @@ def _merge_chunk_results(
 
         chunk_md = cr.md_path.read_text(encoding="utf-8", errors="replace")
 
-        # Remap image paths
+        # Strip image paths and discard image directories
         chunk_images_dir = cr.md_path.parent / "images"
         if not chunk_images_dir.exists():
             # MinerU may also write images to {stem}_mineru_images/
             chunk_images_dir = cr.md_path.parent / f"{cr.md_path.stem}_mineru_images"
 
         if chunk_images_dir.exists() and chunk_images_dir.is_dir():
-            final_images_dir.mkdir(parents=True, exist_ok=True)
-            for img_file in sorted(chunk_images_dir.iterdir()):
-                if img_file.is_file():
-                    # Rename as chunk_idx_original_filename
-                    new_name = f"c{idx:02d}_{img_file.name}"
-                    new_path = final_images_dir / new_name
-                    shutil.copy2(img_file, new_path)
-                    # Replace image references in the Markdown
-                    old_ref = f"images/{img_file.name}"
-                    new_ref = f"images/{new_name}"
-                    chunk_md = chunk_md.replace(old_ref, new_ref)
-                    # Also handle the _mineru_images/ case
-                    old_ref2 = f"{cr.md_path.stem}_mineru_images/{img_file.name}"
-                    chunk_md = chunk_md.replace(old_ref2, new_ref)
-                    image_counter += 1
+            shutil.rmtree(chunk_images_dir, ignore_errors=True)
+        chunk_md = strip_markdown_images(chunk_md)
 
         md_parts.append(chunk_md)
 

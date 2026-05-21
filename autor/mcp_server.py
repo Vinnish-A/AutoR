@@ -19,6 +19,9 @@ import json
 import logging
 import logging.handlers
 import os
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -81,7 +84,7 @@ def _init_logging(cfg):
     ))
     root.addHandler(fh)
 
-    for name in ("httpx", "urllib3", "modelscope", "httpcore", "sentence_transformers"):
+    for name in ("httpx", "urllib3", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
@@ -178,7 +181,7 @@ def search(
     paper_type: str | None = None,
     workspace: str | None = None,
 ) -> str:
-    """FTS5 keyword search across paper titles, abstracts, and conclusions.
+    """Auditable node-level FTS5 search with evidence snippets.
 
     Args:
         query: Search keywords.
@@ -242,81 +245,59 @@ def search_author(
 
 
 @mcp.tool()
-def vsearch(
+def research_bundle(
     query: str,
+    run_dir: str | None = None,
     top_k: int = 10,
+    neighbors: int = 1,
     year: str | None = None,
     journal: str | None = None,
     paper_type: str | None = None,
     workspace: str | None = None,
 ) -> str:
-    """Semantic vector search using the configured embedding model (FAISS cosine similarity).
-
-    Requires the [embed] dependency group: pip install autor[embed].
+    """Generate an auditable evidence bundle plus trace/verify artifacts.
 
     Args:
-        query: Natural language query.
-        top_k: Maximum number of results (default 10).
+        query: Research question or search goal.
+        run_dir: Optional output directory.
+        top_k: Number of seed evidence nodes.
+        neighbors: Previous/next node expansion count.
         year: Year filter.
-        journal: Journal name filter.
+        journal: Journal filter.
         paper_type: Paper type filter.
-        workspace: Optional workspace name.
+        workspace: Optional workspace scope.
     """
     try:
-        from autor.vectors import vsearch as _vsearch
-    except ImportError:
-        return _error("missing_dependency", "Embedding dependencies not installed.",
-                       install_hint="pip install autor[embed]")
-    try:
-        cfg = _get_cfg()
-        paper_ids = _resolve_workspace_ids(workspace)
-        results = _vsearch(
-            query, cfg.index_db, top_k=top_k, cfg=cfg,
-            year=year, journal=journal, paper_type=paper_type, paper_ids=paper_ids,
-        )
-        return json.dumps(results, ensure_ascii=False)
-    except FileNotFoundError:
-        return _error("vectors_not_found", "Vectors not built. Run: autor embed")
-    except Exception as e:
-        _log.exception("vsearch failed")
-        return _error("internal", str(e))
-
-
-@mcp.tool()
-def unified_search(
-    query: str,
-    top_k: int = 20,
-    year: str | None = None,
-    journal: str | None = None,
-    paper_type: str | None = None,
-    workspace: str | None = None,
-) -> str:
-    """Hybrid search combining FTS5 keywords and FAISS semantic vectors.
-
-    Falls back to keyword-only search if embedding dependencies are not installed.
-
-    Args:
-        query: Search query (keywords and/or natural language).
-        top_k: Maximum number of results.
-        year: Year filter.
-        journal: Journal name filter.
-        paper_type: Paper type filter.
-        workspace: Optional workspace name.
-    """
-    try:
-        from autor.index import unified_search as _usearch
+        from autor.index import research_bundle as _research_bundle
 
         cfg = _get_cfg()
         paper_ids = _resolve_workspace_ids(workspace)
-        results = _usearch(
-            query, cfg.index_db, top_k=top_k, cfg=cfg,
-            year=year, journal=journal, paper_type=paper_type, paper_ids=paper_ids,
+        out_dir = Path(run_dir) if run_dir else cfg._root / "workspace" / "research-runs" / "mcp"
+        result = _research_bundle(
+            query,
+            cfg.index_db,
+            run_dir=out_dir,
+            top_k=top_k,
+            cfg=cfg,
+            year=year,
+            journal=journal,
+            paper_type=paper_type,
+            paper_ids=paper_ids,
+            neighbors=neighbors,
         )
-        return json.dumps(results, ensure_ascii=False)
+        return json.dumps(
+            {
+                "bundle_json": result["bundle_json"],
+                "trace": result["trace"],
+                "verify": result["verify"],
+                "paths": result["paths"],
+            },
+            ensure_ascii=False,
+        )
     except FileNotFoundError:
-        return _error("index_not_found", "Index not built. Run: autor index")
+        return _error("index_not_found", "Index not built. Run: autor index --rebuild")
     except Exception as e:
-        _log.exception("unified_search failed")
+        _log.exception("research_bundle failed")
         return _error("internal", str(e))
 
 
@@ -373,7 +354,7 @@ def show_paper(paper_ref: str, layer: int = 2) -> str:
         layer: Detail level 1-4 (default 2).
     """
     try:
-        from autor.loader import load_l1, load_l2, load_l3, load_l4
+        from autor.loader import load_l1, load_l2, load_l3, load_l3_record, load_l4
 
         paper_d = _resolve_paper_dir(paper_ref)
         json_path = paper_d / "meta.json"
@@ -385,6 +366,7 @@ def show_paper(paper_ref: str, layer: int = 2) -> str:
             result["abstract"] = load_l2(json_path)
         if layer >= 3:
             result["conclusion"] = load_l3(json_path)
+            result["l3"] = load_l3_record(json_path)
         if layer >= 4:
             if md_path.exists():
                 result["full_text"] = load_l4(md_path)
@@ -641,22 +623,49 @@ def get_shared_references(
 
 
 # ============================================================================
-#  Build tools (3)
+#  Build tools
 # ============================================================================
 
 
 @mcp.tool()
-def build_index(rebuild: bool = False) -> str:
+def build_index(rebuild: bool = False, background: bool = False) -> str:
     """Build or rebuild the FTS5 full-text search index.
 
     Args:
         rebuild: If True, drop and rebuild from scratch. Otherwise incremental.
+        background: If True, start the build in the background and return a job record.
     """
     try:
         from autor.index import build_index as _build_index
+        from autor.index import build_index_atomic
 
         cfg = _get_cfg()
-        count = _build_index(cfg.papers_dir, cfg.index_db, rebuild=rebuild)
+        if background:
+            run_dir = cfg._root / ".run"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            log_path = run_dir / "index-rebuild.log"
+            job_file = run_dir / "index-job.json"
+            cmd = [sys.executable, "-m", "autor.cli", "index"]
+            if rebuild:
+                cmd.append("--rebuild")
+            env = os.environ.copy()
+            env["AUTOR_ROOT"] = str(cfg._root)
+            out = log_path.open("ab")
+            proc = subprocess.Popen(cmd, cwd=cfg._root, env=env, stdout=out, stderr=subprocess.STDOUT)
+            out.close()
+            job = {
+                "pid": proc.pid,
+                "command": cmd,
+                "log": str(log_path),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "rebuild": rebuild,
+            }
+            job_file.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            return json.dumps({"status": "queued", **job}, ensure_ascii=False)
+        if rebuild:
+            count = build_index_atomic(cfg.papers_dir, cfg.index_db, rebuild=True)
+        else:
+            count = _build_index(cfg.papers_dir, cfg.index_db, rebuild=False)
         return json.dumps({"indexed": count})
     except Exception as e:
         _log.exception("build_index failed")
@@ -664,127 +673,31 @@ def build_index(rebuild: bool = False) -> str:
 
 
 @mcp.tool()
-def build_vectors(rebuild: bool = False) -> str:
-    """Build or rebuild the FAISS semantic vector index.
-
-    Requires [embed] dependencies. First run downloads the configured embedding model.
-
-    Args:
-        rebuild: If True, regenerate all vectors. Otherwise incremental.
-    """
+def index_status() -> str:
+    """Return the local index health summary and any background job record."""
     try:
-        from autor.vectors import build_vectors as _build_vectors
-    except ImportError:
-        return _error("missing_dependency", "Embedding dependencies not installed.",
-                       install_hint="pip install autor[embed]")
-    try:
+        from autor.index import index_status as _index_status
+
         cfg = _get_cfg()
-        count = _build_vectors(cfg.papers_dir, cfg.index_db, rebuild=rebuild, cfg=cfg)
-        return json.dumps({"vectors": count})
+        payload = _index_status(cfg.index_db)
+        job_file = cfg._root / ".run" / "index-job.json"
+        if job_file.exists():
+            try:
+                job = json.loads(job_file.read_text(encoding="utf-8"))
+                pid = int(job.get("pid") or 0)
+                running = False
+                if pid:
+                    try:
+                        os.kill(pid, 0)
+                        running = True
+                    except OSError:
+                        running = False
+                payload["background_job"] = {**job, "running": running}
+            except (OSError, json.JSONDecodeError, ValueError):
+                payload["background_job"] = {"status": "unreadable", "path": str(job_file)}
+        return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
-        _log.exception("build_vectors failed")
-        return _error("internal", str(e))
-
-
-@mcp.tool()
-def build_topics(
-    rebuild: bool = False,
-    min_topic_size: int = 5,
-    nr_topics: int = 0,
-) -> str:
-    """Build or rebuild the BERTopic topic model.
-
-    Requires [topics] dependencies. nr_topics=0 means auto-detect.
-
-    Args:
-        rebuild: If True, force rebuild. Otherwise load cached model.
-        min_topic_size: Minimum cluster size for HDBSCAN.
-        nr_topics: Target number of topics (0 = auto).
-    """
-    try:
-        from autor.topics import build_topics as _build_topics
-        from autor.topics import get_topic_overview, load_model
-    except ImportError:
-        return _error("missing_dependency", "Topics dependencies not installed.",
-                       install_hint="pip install autor[topics]")
-    try:
-        cfg = _get_cfg()
-        model_dir = cfg.topics_model_dir
-
-        if not rebuild and (model_dir / "bertopic_model.pkl").exists():
-            model = load_model(model_dir)
-        else:
-            nr = None if nr_topics == 0 else nr_topics
-            model = _build_topics(
-                cfg.index_db, cfg.papers_dir,
-                min_topic_size=min_topic_size, nr_topics=nr,
-                save_path=model_dir, cfg=cfg,
-            )
-
-        overview = get_topic_overview(model)
-        n_outliers = sum(1 for t in overview if t.get("topic_id") == -1)
-        return json.dumps({
-            "topics": len(overview) - (1 if n_outliers else 0),
-            "outliers": n_outliers,
-            "total_papers": sum(t.get("count", 0) for t in overview),
-        })
-    except Exception as e:
-        _log.exception("build_topics failed")
-        return _error("internal", str(e))
-
-
-# ============================================================================
-#  Topics tools (2)
-# ============================================================================
-
-
-@mcp.tool()
-def topic_overview() -> str:
-    """Get an overview of all topics in the paper library.
-
-    Returns topic IDs, keywords, paper counts, and representative papers.
-    Requires a pre-built topic model (run build_topics first).
-    """
-    try:
-        from autor.topics import get_topic_overview, load_model
-    except ImportError:
-        return _error("missing_dependency", "Topics dependencies not installed.",
-                       install_hint="pip install autor[topics]")
-    try:
-        cfg = _get_cfg()
-        model_dir = cfg.topics_model_dir
-        if not (model_dir / "bertopic_model.pkl").exists():
-            return _error("model_not_found", "Topic model not built. Run build_topics first.")
-        model = load_model(model_dir)
-        overview = get_topic_overview(model)
-        return json.dumps(overview, ensure_ascii=False)
-    except Exception as e:
-        _log.exception("topic_overview failed")
-        return _error("internal", str(e))
-
-
-@mcp.tool()
-def topic_papers(topic_id: int) -> str:
-    """List papers belonging to a specific topic.
-
-    Args:
-        topic_id: Topic ID from topic_overview results (-1 for outliers).
-    """
-    try:
-        from autor.topics import get_topic_papers, load_model
-    except ImportError:
-        return _error("missing_dependency", "Topics dependencies not installed.",
-                       install_hint="pip install autor[topics]")
-    try:
-        cfg = _get_cfg()
-        model_dir = cfg.topics_model_dir
-        if not (model_dir / "bertopic_model.pkl").exists():
-            return _error("model_not_found", "Topic model not built. Run build_topics first.")
-        model = load_model(model_dir)
-        papers = get_topic_papers(model, topic_id)
-        return json.dumps(papers, ensure_ascii=False)
-    except Exception as e:
-        _log.exception("topic_papers failed")
+        _log.exception("index_status failed")
         return _error("internal", str(e))
 
 
@@ -895,6 +808,288 @@ def workspace_remove(name: str, paper_refs: list[str]) -> str:
         return json.dumps({"removed": removed}, ensure_ascii=False)
     except Exception as e:
         _log.exception("workspace_remove failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_status(name: str, include_papers: bool = False) -> str:
+    """Inspect workspace corpus completeness and enrichment status.
+
+    Args:
+        name: Workspace name.
+        include_papers: Include per-paper status rows.
+    """
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        payload = ws_mod.status(ws_dir, cfg.papers_dir, cfg.index_db, include_papers=include_papers)
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_status failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_export_evidence(name: str) -> str:
+    """Export a workspace evidence ledger as structured JSON.
+
+    Args:
+        name: Workspace name.
+    """
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        rows = ws_mod.export_evidence(ws_dir, cfg.papers_dir, cfg.index_db)
+        return json.dumps(rows, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_export_evidence failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_screen(
+    name: str,
+    criteria: str,
+    target_count: int | None = None,
+    apply: bool = False,
+) -> str:
+    """Score and optionally apply workspace screening by textual criteria.
+
+    Args:
+        name: Workspace name.
+        criteria: Inclusion and exclusion criteria in plain text.
+        target_count: Optional number of highest-scoring papers to retain.
+        apply: Remove excluded papers from the workspace when true.
+    """
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        if not criteria.strip():
+            return _error("invalid_args", "criteria is required")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        result = ws_mod.screen(
+            ws_dir,
+            cfg.papers_dir,
+            cfg.index_db,
+            criteria=criteria,
+            target_count=target_count,
+            apply=apply,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_screen failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_generate_planning_package(
+    name: str,
+    title: str | None = None,
+    criteria: str = "",
+) -> str:
+    """Generate the canonical workspace planning package skeleton.
+
+    Args:
+        name: Workspace name.
+        title: Optional review title.
+        criteria: Optional screening criteria to record in review-plan.md.
+    """
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        result = ws_mod.generate_planning_package(
+            ws_dir,
+            cfg.papers_dir,
+            cfg.index_db,
+            title=title,
+            criteria=criteria,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_generate_planning_package failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_citation_coverage(
+    name: str,
+    manuscript: str | None = None,
+    require: str = "retained",
+) -> str:
+    """Check whether a manuscript cites the required reference-map entries.
+
+    Args:
+        name: Workspace name.
+        manuscript: Optional Markdown path. Defaults to final.md, then write.md.
+        require: Required scope: retained, citable, or must_cite.
+    """
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        manuscript_path = Path(manuscript) if manuscript else None
+        result = ws_mod.citation_coverage(ws_dir, manuscript_path, require=require)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_citation_coverage failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_citation_network(
+    name: str,
+    min_shared: int = 2,
+    output: str | None = None,
+) -> str:
+    """Build and save a workspace-scoped citation-network sidecar.
+
+    Args:
+        name: Workspace name.
+        min_shared: Minimum shared-reference count.
+        output: Optional output JSON path. Defaults to sidecars/citation-network.json.
+    """
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        result = ws_mod.citation_network(ws_dir, cfg.index_db, min_shared=min_shared)
+        out = Path(output) if output else ws_dir / "sidecars" / "citation-network.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return json.dumps({"status": "ok", "output": str(out), "network": result}, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_citation_network failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_figure_status(name: str) -> str:
+    """Check planned figure exports against table-figure-plan.md and manifest."""
+    try:
+        from autor import workspace as ws_mod
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+        result = ws_mod.figure_status(ws_dir)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        _log.exception("workspace_figure_status failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def workspace_enrich_l3(
+    name: str,
+    only_missing: bool = True,
+    force: bool = False,
+    max_retries: int = 2,
+) -> str:
+    """Generate L3 conclusion cards strictly within a workspace.
+
+    Args:
+        name: Workspace name.
+        only_missing: Skip papers that already have an L3 card.
+        force: Regenerate existing cards.
+        max_retries: LLM retry count per paper.
+    """
+    try:
+        from autor import workspace as ws_mod
+        from autor.loader import enrich_l3 as _enrich_l3
+        from autor.papers import read_meta
+
+        cfg = _get_cfg()
+        if not ws_mod.validate_workspace_name(name):
+            return _error("invalid_workspace", f"Invalid workspace name: {name}")
+        ws_dir = cfg._root / "workspace" / name
+        if not ws_dir.exists():
+            return _error("not_found", f"Workspace not found: {name}")
+
+        ok = fail = skipped = 0
+        papers = []
+        for dir_name in sorted(ws_mod.read_dir_names(ws_dir, cfg.index_db)):
+            paper_d = cfg.papers_dir / dir_name
+            json_path = paper_d / "meta.json"
+            md_path = paper_d / "paper.md"
+            if not json_path.exists() or not md_path.exists():
+                skipped += 1
+                papers.append({"paper": dir_name, "status": "skipped", "reason": "missing meta.json or paper.md"})
+                continue
+
+            meta = read_meta(paper_d)
+            has_l3 = bool(meta.get("l3"))
+            if only_missing and has_l3 and not force:
+                skipped += 1
+                papers.append({"paper": dir_name, "status": "skipped", "reason": "already_has_l3"})
+                continue
+
+            success = _enrich_l3(json_path, md_path, cfg, force=force, max_retries=max_retries)
+            meta = read_meta(paper_d)
+            if success:
+                ok += 1
+                status = "ok"
+            else:
+                fail += 1
+                status = "failed"
+            papers.append(
+                {
+                    "paper": dir_name,
+                    "status": status,
+                    "l3_status": meta.get("l3_last_attempt_status"),
+                    "stage": meta.get("l3_last_attempt_stage"),
+                    "reason": meta.get("l3_last_attempt_reason"),
+                    "method": meta.get("l3_last_attempt_method"),
+                }
+            )
+
+        return json.dumps(
+            {
+                "workspace": name,
+                "ok": ok,
+                "failed": fail,
+                "skipped": skipped,
+                "papers": papers,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        _log.exception("workspace_enrich_l3 failed")
         return _error("internal", str(e))
 
 
@@ -1072,9 +1267,9 @@ def pipeline_ingest(
 
     Place PDF or .md files in data/inbox/, then call this tool to process them.
     The pipeline extracts metadata, deduplicates by DOI, and moves papers
-    to data/papers/. Afterwards it rebuilds the search index and vectors.
+    to data/papers/. Afterwards it rebuilds the node-level FTS5 evidence index.
 
-    Presets: "ingest" (full), "reindex" (rebuild index+vectors only),
+    Presets: "ingest" (full), "reindex" (rebuild index only),
     "md-only" (skip MinerU, process .md files only).
 
     This is a long-running operation (may take minutes for PDFs).
@@ -1308,7 +1503,7 @@ def attach_pdf(paper_ref: str, pdf_path: str) -> str:
         shutil.copy2(str(src), str(dest_pdf))
 
         # Convert via MinerU
-        from autor.ingest.mineru import ConvertOptions, check_server, convert_pdf
+        from autor.ingest.mineru import ConvertOptions, check_server, convert_pdf, strip_markdown_images
 
         mineru_opts = ConvertOptions(
             api_url=cfg.ingest.mineru_endpoint,
@@ -1338,17 +1533,16 @@ def attach_pdf(paper_ref: str, pdf_path: str) -> str:
             if paper_md.exists():
                 paper_md.unlink()
             shutil.move(str(result.md_path), str(paper_md))
+        if paper_md.exists():
+            paper_md.write_text(strip_markdown_images(paper_md.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
 
-        # Clean up MinerU artifacts
+        # Clean up MinerU artifacts; images are not retained.
         for pattern in ["*_layout.json", "*_content_list.json", "*_origin.pdf"]:
             for f in paper_d.glob(pattern):
                 f.unlink(missing_ok=True)
-        for img_dir in paper_d.glob("*_images"):
-            if img_dir.name != "images" and img_dir.is_dir():
-                target = paper_d / "images"
-                if target.exists():
-                    shutil.rmtree(target)
-                img_dir.rename(target)
+        for img_dir in list(paper_d.glob("*_images")) + list(paper_d.glob("*_mineru_images")) + [paper_d / "images"]:
+            if img_dir.is_dir():
+                shutil.rmtree(img_dir)
 
         # Backfill abstract
         try:
@@ -1407,13 +1601,13 @@ def enrich_toc(paper_ref: str, force: bool = False) -> str:
 
 @mcp.tool()
 def enrich_l3(paper_ref: str, force: bool = False) -> str:
-    """Extract conclusion section from a paper using LLM.
+    """Generate the L3 paper-level conclusion card using LLM.
 
     Requires LLM API key (DeepSeek) in config.
 
     Args:
         paper_ref: Paper identifier.
-        force: Re-extract even if conclusion already exists.
+        force: Regenerate even if L3 already exists.
     """
     try:
         from autor.loader import enrich_l3 as _enrich_l3
@@ -1451,19 +1645,22 @@ def refetch(
     paper_ref: str | None = None,
     all_papers: bool = False,
     force: bool = False,
+    workspace: str | None = None,
 ) -> str:
     """Refetch citation counts and bibliographic details from external APIs.
 
-    Either specify a single paper or set all_papers=True.
+    Specify a single paper, a workspace, or set all_papers=True.
 
     Args:
         paper_ref: Single paper identifier (optional).
+        workspace: Optional workspace name to refetch only that corpus.
         all_papers: If True, refetch all papers missing citation data.
         force: If True, refetch all papers regardless of existing data.
     """
     try:
         import json as _json
 
+        from autor import workspace as ws_mod
         from autor.ingest.metadata import refetch_metadata
         from autor.papers import iter_paper_dirs
 
@@ -1474,15 +1671,33 @@ def refetch(
             jp = paper_d / "meta.json"
             changed = refetch_metadata(jp)
             return _json.dumps({"status": "ok", "changed": changed, "paper": paper_d.name})
-        elif all_papers:
-            targets = sorted(d / "meta.json" for d in iter_paper_dirs(cfg.papers_dir))
+        elif workspace or all_papers:
+            if workspace:
+                if not ws_mod.validate_workspace_name(workspace):
+                    return _error("invalid_workspace", f"Invalid workspace name: {workspace}")
+                ws_dir = cfg._root / "workspace" / workspace
+                if not ws_dir.exists():
+                    return _error("not_found", f"Workspace not found: {workspace}")
+                targets = []
+                for entry in ws_mod.read_entries(ws_dir):
+                    dir_name = entry.get("dir_name", "")
+                    jp = cfg.papers_dir / dir_name / "meta.json"
+                    if jp.exists():
+                        targets.append(jp)
+                targets = sorted(set(targets))
+            else:
+                targets = sorted(d / "meta.json" for d in iter_paper_dirs(cfg.papers_dir))
             if not force:
                 filtered = []
                 for jp in targets:
                     data = _json.loads(jp.read_text(encoding="utf-8"))
                     if not data.get("doi"):
                         continue
-                    if not data.get("citation_count") or not all(data.get(k) for k in ("volume", "publisher")):
+                    if (
+                        not data.get("citation_count")
+                        or not data.get("references")
+                        or not all(data.get(k) for k in ("volume", "publisher"))
+                    ):
                         filtered.append(jp)
                 targets = filtered
 
@@ -1496,9 +1711,18 @@ def refetch(
                         skip += 1
                 except Exception:
                     fail += 1
-            return _json.dumps({"status": "ok", "updated": ok, "skipped": skip, "failed": fail})
+            return _json.dumps(
+                {
+                    "status": "ok",
+                    "workspace": workspace,
+                    "target_count": len(targets),
+                    "updated": ok,
+                    "skipped": skip,
+                    "failed": fail,
+                }
+            )
         else:
-            return _error("invalid_args", "Specify paper_ref or set all_papers=True.")
+            return _error("invalid_args", "Specify paper_ref, workspace, or set all_papers=True.")
     except ValueError as e:
         return _error("not_found", str(e))
     except Exception as e:

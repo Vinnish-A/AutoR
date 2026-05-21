@@ -51,7 +51,7 @@ This is essentially a focused literature review; follow the `/literature-review`
    autor show <dir_name> --level 4      # Read the full text for method details
    ```
 3. Make sure notation is consistent and derivations are complete
-4. **Formulas and figures**: read the mathematical derivations (LaTeX) and method diagrams (`images/`) in reference papers, compare them with the current method, and ensure the description is accurate
+4. **Formulas and figures**: read mathematical derivations (LaTeX) from reference papers; use only user-provided or explicitly generated figure files for visual comparison because MinerU image attachments are not retained
 
 #### Results / Discussion
 1. The user provides experimental data and/or figures
@@ -60,7 +60,7 @@ This is essentially a focused literature review; follow the `/literature-review`
    autor ws search <name> "<experimental condition>"
    autor show <dir_name> --level 3      # Conclusion
    ```
-3. **Figure-based comparison**: inspect result figures in the reference papers (`data/papers/<dir>/images/`) and compare them qualitatively or quantitatively with the user's results
+3. **Figure-based comparison**: inspect user-provided or explicitly generated result figures and compare them qualitatively or quantitatively with the user's results
 4. **Code-based verification**: use Python for data analysis, statistical testing, and visualization so that Discussion claims are supported by actual computation
 5. **Results**: describe the findings objectively and cite the relevant figures
 6. **Discussion**: explain possible reasons, compare with the literature, and discuss limitations
@@ -80,7 +80,7 @@ This is essentially a focused literature review; follow the `/literature-review`
 - **All citations must come from real papers already in the workspace**; never invent references
 - If the workspace is missing a paper that needs to be cited, tell the user to add it:
   ```bash
-  autor usearch "<keywords>"               # Search the full library for candidates
+  autor search "<keywords>"                # Search the full library for candidates
   autor ws add <name> <dir_name>           # Add to the workspace
   ```
 - Final export:

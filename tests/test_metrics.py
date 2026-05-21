@@ -71,7 +71,7 @@ class TestMetricsStore:
         assert results[0]["tokens_in"] == 100
 
     def test_query_no_match(self, store):
-        store.record("step", "embed")
+        store.record("step", "index")
         results = store.query(category="llm")
         assert len(results) == 0
 
