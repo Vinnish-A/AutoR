@@ -7,9 +7,9 @@ description: Draft a fact-grounded review manuscript from an approved autor plan
 
 Use this skill after planning is approved. It turns the canonical planning package into manuscript prose. It is not for re-planning, adding new papers, or silently filling evidence gaps from memory.
 
-Hard constraint for manuscript prose: writing, translation, polishing, and final integration must be produced by the active coding-agent framework's own model capability. Do not call external LLM APIs, AutoR LLM-backed generation utilities, external translation services, or custom scripts that generate prose through external models. Deterministic scripts are allowed only for formatting, citation checks, figure-status checks, DOCX export, and document inspection.
+Hard constraint for manuscript prose: writing prose may be delegated only to `autor write-agent`. No other external LLM calls, external translation services, or custom prose-generation scripts are allowed. Deterministic scripts are allowed only for formatting, citation checks, figure-status checks, DOCX export, and document inspection.
 
-Do not use a section-file merge workflow. The canonical manuscript is one integrated file at `workspace/<name>/write.md`. Subagents may provide bounded advisory text or critique when explicitly authorized, but the responsible writing agent must integrate and revise the manuscript directly. MCP/client-side concatenation or scripted merging of `sections/` files is prohibited.
+Do not use a section-file merge workflow. The canonical manuscript is one integrated file at `workspace/<name>/write.md`. `variants/` are non-canonical candidates only. Subagents may provide bounded advisory text or critique when explicitly authorized, but the responsible writing agent must integrate and revise the manuscript directly. MCP/client-side concatenation or scripted merging of `sections/` files is prohibited. Do not promote to `final.md` before external Critic and Check pass.
 
 ## Required Inputs
 
@@ -61,37 +61,26 @@ Use an existing CSL under the workspace when available. For Nature Reviews / Spr
 
 ## Drafting Workflow
 
-### 1. Build section kernels
+### 1. Run WriteAgent preflight and build
 
-For each main section in `review-plan.md`, derive:
+When writing is requested:
 
-- controlling claim
-- strongest supporting citation keys
-- main contrast, controversy, or boundary
-- what the section must not overclaim
-- required tables or figures
+```bash
+autor write-agent preflight <name>
+autor write-agent build <name>
+autor write-agent run <name>
+autor write-agent critic-context <name> --round <N>
+```
 
-Save this only if useful, for example:
+Then launch an external GPT-5.5 thinking high Critic subagent using `workspace/<name>/sidecars/critic-context.md`. If rejected, run:
 
-```text
-workspace/<name>/sidecars/section-kernels.md
+```bash
+autor write-agent revise <name> --ticket workspace/<name>/qa/round-<N>/critic-ticket.md
 ```
 
 ### 2. Draft as one integrated manuscript
 
-Follow the section IDs and order in `review-plan.md`.
-
-For each section:
-
-1. read the section card in `review-plan.md`
-2. read the matching evidence rows in `evidence-ledger.md`
-3. check required assets in `table-figure-plan.md`
-4. write from a conclusion kernel rather than generic background
-5. synthesize evidence rather than listing papers
-6. state evidence-thin areas honestly
-7. instantiate required Markdown tables
-8. use only valid citation keys
-9. preserve L3 boundaries: distinguish author-stated conclusions, inferred L3 synthesis, quantitative signals, and limitations
+`autor write-agent` generates section kernels, seed candidates, internal gate reports, and anchor replacements inside `workspace/<name>/write.md`. The writing agent may inspect these sidecars, but must not concatenate candidate files or promote a candidate from `variants/` directly.
 
 Dash discipline:
 

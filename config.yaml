@@ -21,6 +21,23 @@ llm:
   timeout_clean: 90 # validate_and_clean timeout 结论清洗超时
   concurrency: 32 # Max concurrent LLM calls for enrich (toc/l3) enrich 并发数
 
+write_agent:
+  enabled: true
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY
+  model: deepseek-v4-pro
+  fast_model: deepseek-v4-flash
+  thinking: true
+  reasoning_effort: high
+  seed_count: 9
+  max_rounds: 2
+  writer_backend_label: DeepSeek write-agent
+  audit_assumption_label: Claude-family LLM-written manuscript
+  external_critic_required: true
+  external_critic_model_label: GPT-5.5 thinking high
+  timeout: 120
+
 # --- Backend presets 后端预设示例 ---
 # DeepSeek (default 默认):
 #   backend: openai-compat

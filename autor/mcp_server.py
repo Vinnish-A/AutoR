@@ -1842,6 +1842,77 @@ def rename_paper(
 
 
 # ============================================================================
+#  WriteAgent tools (5)
+# ============================================================================
+
+
+@mcp.tool()
+def write_agent_preflight(workspace: str) -> str:
+    """Validate canonical planning-package inputs before write-agent drafting."""
+    try:
+        from autor.write_agent import runner
+
+        cfg = _get_cfg()
+        return json.dumps(runner.preflight(workspace, cfg).to_dict(), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_preflight failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_build(workspace: str) -> str:
+    """Build section kernels and seed bank for a workspace."""
+    try:
+        from autor.write_agent import runner
+
+        cfg = _get_cfg()
+        return json.dumps(runner.build(workspace, cfg).to_dict(), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_build failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_run(workspace: str, section: str | None = None, round: int = 1) -> str:
+    """Generate gated manuscript candidates and update write.md anchors."""
+    try:
+        from autor.write_agent import runner
+
+        cfg = _get_cfg()
+        sections = [section] if section else None
+        return json.dumps(runner.run(workspace, cfg, sections=sections, round_no=round).to_dict(), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_run failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_revise(workspace: str, ticket_paths: list[str]) -> str:
+    """Revise affected anchors from external critic/check ticket files."""
+    try:
+        from autor.write_agent import runner
+
+        cfg = _get_cfg()
+        return json.dumps(runner.revise(workspace, cfg, ticket_paths).to_dict(), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_revise failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_status(workspace: str) -> str:
+    """Return write-agent state for a workspace."""
+    try:
+        from autor.write_agent import runner
+
+        cfg = _get_cfg()
+        return json.dumps(runner.status(workspace, cfg), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_status failed")
+        return _error("internal", str(e))
+
+
+# ============================================================================
 #  Entry point
 # ============================================================================
 

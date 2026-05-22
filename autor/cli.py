@@ -1416,6 +1416,31 @@ def cmd_identify(args: argparse.Namespace, cfg) -> None:
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
+def cmd_write_agent(args: argparse.Namespace, cfg) -> None:
+    from autor.write_agent import runner
+
+    action = args.write_agent_action
+    try:
+        if action == "preflight":
+            result = runner.preflight(args.workspace, cfg).to_dict()
+        elif action == "build":
+            result = runner.build(args.workspace, cfg).to_dict()
+        elif action == "run":
+            sections = [args.section] if args.section else None
+            result = runner.run(args.workspace, cfg, sections=sections, round_no=args.round_no).to_dict()
+        elif action == "revise":
+            result = runner.revise(args.workspace, cfg, args.ticket_paths).to_dict()
+        elif action == "status":
+            result = runner.status(args.workspace, cfg)
+        elif action == "critic-context":
+            result = runner.critic_context(args.workspace, cfg, args.round_no)
+        else:
+            result = {"error": "unknown_action", "action": action}
+    except ValueError as e:
+        result = {"status": "BLOCKED_BY_MISSING_INPUT", "failed_stage": action, "cause_class": "invalid_workspace", "error": str(e)}
+    ui(json.dumps(result, indent=2, ensure_ascii=False))
+
+
 def cmd_ws(args: argparse.Namespace, cfg) -> None:
     from autor import workspace
 
@@ -3083,6 +3108,33 @@ def main() -> None:
     p_ws_fig.add_argument("name", help="工作区名称")
     p_ws_fig.add_argument("--fail-if-missing", action="store_true", help="存在未导出的计划图片时返回非零状态")
     p_ws_fig.add_argument("-o", "--output", type=str, default=None, help="输出检查报告路径")
+
+    # --- write-agent ---
+    p_wa = sub.add_parser("write-agent", help="从批准的规划包生成 gated write.md")
+    p_wa.set_defaults(func=cmd_write_agent)
+    p_wa_sub = p_wa.add_subparsers(dest="write_agent_action", required=True)
+
+    p_wa_preflight = p_wa_sub.add_parser("preflight", help="检查 write-agent canonical 输入")
+    p_wa_preflight.add_argument("workspace", help="工作区名称")
+
+    p_wa_build = p_wa_sub.add_parser("build", help="生成 section kernels 和 seed bank")
+    p_wa_build.add_argument("workspace", help="工作区名称")
+
+    p_wa_run = p_wa_sub.add_parser("run", help="生成候选、运行内部 gates 并更新 write.md anchors")
+    p_wa_run.add_argument("workspace", help="工作区名称")
+    p_wa_run.add_argument("--section", type=str, default=None, help="只重写指定 section ID，例如 S3")
+    p_wa_run.add_argument("--round", dest="round_no", type=int, default=1, help="QA round 编号")
+
+    p_wa_revise = p_wa_sub.add_parser("revise", help="根据 critic/check ticket 修订受影响 anchors")
+    p_wa_revise.add_argument("workspace", help="工作区名称")
+    p_wa_revise.add_argument("--ticket", dest="ticket_paths", action="append", required=True, help="ticket 文件路径，可重复传入")
+
+    p_wa_status = p_wa_sub.add_parser("status", help="查看 write-agent 状态")
+    p_wa_status.add_argument("workspace", help="工作区名称")
+
+    p_wa_ctx = p_wa_sub.add_parser("critic-context", help="生成外部 Critic subagent 上下文包")
+    p_wa_ctx.add_argument("workspace", help="工作区名称")
+    p_wa_ctx.add_argument("--round", dest="round_no", type=int, default=1, help="QA round 编号")
 
     # --- import-endnote ---
     p_ie = sub.add_parser("import-endnote", help="从 Endnote XML/RIS 导入论文元数据")
