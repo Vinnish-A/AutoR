@@ -1,0 +1,5 @@
+{"id": "recipe_generic_opening", "source_id": "Longo2021SpatialSingleCell", "anti_pattern": "generic_integration_opening", "rewrite_action": "Replace review metanarrative with a concrete blind spot or contradiction."}
+{"id": "recipe_validation", "source_id": "Giacomello2020MitochondrialDynamics", "anti_pattern": "generic_validation_ending", "rewrite_action": "Name the missing proof: assay, endpoint, mechanism, subtype, sampling, trial design, ROI, or segmentation."}
+{"id": "recipe_table_warehouse", "source_id": "Emblem2014VesselCalibre", "anti_pattern": "evidence_warehouse_table", "rewrite_action": "Change Study/Design storage into a question-adjudication table."}
+{"id": "recipe_citation_stack", "source_id": "ClinicalTrialEndpointReview", "anti_pattern": "citation_stacking", "rewrite_action": "Assign each citation a function or split the sentence by evidence tier."}
+{"id": "recipe_process_trace", "source_id": "RetractionWatch2023RegenerateResponse", "anti_pattern": "process_trace", "rewrite_action": "Hard fail and return to write stage; do not hide workflow traces by polishing."}

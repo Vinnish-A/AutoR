@@ -130,6 +130,21 @@ Input files:
 - workspace/{workspace}/sidecars/claim-license-ledger.tsv
 - workspace/{workspace}/sidecars/anti-ai-report.md
 - workspace/{workspace}/sidecars/human-move-report.md
+- workspace/{workspace}/sidecars/human-move-bank.json
+- workspace/{workspace}/sidecars/anti-ai-patterns.json
+- workspace/{workspace}/sidecars/section-pattern-contracts.jsonl
+- workspace/{workspace}/sidecars/pattern-scores.jsonl
+- workspace/{workspace}/qa/write-agent/pattern-report.md
+- workspace/{workspace}/qa/write-agent/polish-report.md
+
+The manuscript has passed internal write-agent pattern gates, but the external critic must still independently check:
+- polished but evasive prose
+- evidence flattening
+- interchangeable section openings
+- generic validation endings
+- table-as-warehouse behavior
+- failure to distinguish direct, adjacent, method-only, and background evidence
+- failure to name a concrete missing proof
 
 Output:
 - workspace/{workspace}/qa/round-{round_no}/critic-ticket.md

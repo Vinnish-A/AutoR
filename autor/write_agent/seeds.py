@@ -20,6 +20,18 @@ SEED_TYPES = [
     "failure_test",
 ]
 
+SEED_REQUIRED_MOVES = {
+    "measurement_blindspot": "measurement_blindspot",
+    "old_model_failure": "old_model_failure",
+    "direct_vs_adjacent_evidence": "evidence_tiering",
+    "clinical_endpoint_failure": "clinical_claim_boundary",
+    "method_loss": "method_loss_to_extension",
+    "mechanistic_tension": "precise_uncertainty",
+    "evidence_downgrade": "evidence_tiering",
+    "table_adjudication": "table_as_adjudication",
+    "failure_test": "failure_test_ending",
+}
+
 FORBIDDEN_PATTERNS = [
     "not simply X but Y",
     "not merely X but Y",
@@ -37,10 +49,14 @@ def build_seed_bank(ws_dir: Path, kernels: list[SectionKernel], seed_count: int 
             seed = {
                 "seed_id": f"{kernel.section_id}-seed-{idx + 1:02d}",
                 "section_id": kernel.section_id,
+                "seed_type": seed_type,
                 "type": seed_type,
+                "required_move": SEED_REQUIRED_MOVES.get(seed_type, "verbs_carry_judgment"),
+                "forbidden_pattern": "generic_integration_opening",
                 "opening_move": _opening_move(seed_type, kernel),
                 "evidence_keys": direct[:2] if direct else [],
                 "forbidden_patterns": FORBIDDEN_PATTERNS,
+                "do_not_say": FORBIDDEN_PATTERNS,
             }
             seeds.append(seed)
     write_jsonl(sidecars_dir(ws_dir) / "seed-bank.jsonl", seeds)

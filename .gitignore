@@ -1,6 +1,7 @@
 # Data & index (not tracked)
 data/
 workspace/
+workspace/_pattern_research_cache/
 !.claude/skills/workspace/
 
 # Python

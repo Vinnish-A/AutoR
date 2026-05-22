@@ -8,6 +8,14 @@ license: MIT
 
 Use this skill to turn existing academic prose into a **publication-ready final text**, not a draft that still sounds as though it is being actively revised.
 
+For AutoR review manuscripts with `workspace/<name>/write.md`, do not manually polish the manuscript. Use the write-agent polish stage:
+
+```bash
+autor write-agent polish <name>
+```
+
+The write-agent polish stage preserves citation keys, anchored sections, tables, figures, and YAML metadata, then reruns internal pattern gates. Manual polishing is only for non-AutoR text or user-provided prose outside the write-agent manuscript workflow.
+
 Core goals:
 - remove AI traces
 - remove pipeline / review / self-correction traces

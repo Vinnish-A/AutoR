@@ -54,4 +54,7 @@ class TestWriteAgentPreflight:
         assert result.status == "SEEDS_GENERATED"
         assert (ws_dir / "sidecars" / "section-kernels.jsonl").exists()
         assert (ws_dir / "sidecars" / "seed-bank.jsonl").exists()
+        assert (ws_dir / "sidecars" / "human-move-bank.json").exists()
+        assert (ws_dir / "sidecars" / "anti-ai-patterns.json").exists()
+        assert (ws_dir / "sidecars" / "section-pattern-contracts.jsonl").exists()
         assert "<!-- AUTOR:SECTION S1 START -->" in (ws_dir / "write.md").read_text(encoding="utf-8")

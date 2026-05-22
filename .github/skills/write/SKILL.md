@@ -61,14 +61,13 @@ Use an existing CSL under the workspace when available. For Nature Reviews / Spr
 
 ## Drafting Workflow
 
-### 1. Run WriteAgent preflight and build
+### 1. Run WriteAgent write and polish
 
 When writing is requested:
 
 ```bash
-autor write-agent preflight <name>
-autor write-agent build <name>
-autor write-agent run <name>
+autor write-agent write <name>
+autor write-agent polish <name>
 autor write-agent critic-context <name> --round <N>
 ```
 
@@ -80,7 +79,7 @@ autor write-agent revise <name> --ticket workspace/<name>/qa/round-<N>/critic-ti
 
 ### 2. Draft as one integrated manuscript
 
-`autor write-agent` generates section kernels, seed candidates, internal gate reports, and anchor replacements inside `workspace/<name>/write.md`. The writing agent may inspect these sidecars, but must not concatenate candidate files or promote a candidate from `variants/` directly.
+`autor write-agent` generates section kernels, seed candidates, internal pattern gates, polish reports, and anchor replacements inside `workspace/<name>/write.md`. The writing agent may inspect these sidecars, but must not concatenate candidate files or promote a candidate from `variants/` directly. Do not manually polish AutoR manuscripts; use `autor write-agent polish <name>`.
 
 Dash discipline:
 

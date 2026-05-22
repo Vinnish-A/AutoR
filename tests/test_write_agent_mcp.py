@@ -18,3 +18,19 @@ def test_write_agent_mcp_preflight_returns_status(tmp_path):
         mcp_server._cfg = old_cfg
 
     assert payload["status"] == "BLOCKED_BY_MISSING_INPUT"
+
+
+def test_write_agent_mcp_polish_missing_write_returns_status(tmp_path):
+    cfg = _build_config({}, tmp_path)
+    cfg.ensure_dirs()
+    (tmp_path / "workspace" / "empty-ws").mkdir()
+
+    old_cfg = mcp_server._cfg
+    try:
+        mcp_server._cfg = cfg
+        payload = json.loads(mcp_server.write_agent_polish("empty-ws"))
+    finally:
+        mcp_server._cfg = old_cfg
+
+    assert payload["status"] == "BLOCKED_BY_MISSING_INPUT"
+    assert payload["failed_stage"] == "polish"

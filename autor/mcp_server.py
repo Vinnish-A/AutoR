@@ -1842,7 +1842,7 @@ def rename_paper(
 
 
 # ============================================================================
-#  WriteAgent tools (5)
+#  WriteAgent tools
 # ============================================================================
 
 
@@ -1883,6 +1883,33 @@ def write_agent_run(workspace: str, section: str | None = None, round: int = 1) 
         return json.dumps(runner.run(workspace, cfg, sections=sections, round_no=round).to_dict(), ensure_ascii=False)
     except Exception as e:
         _log.exception("write_agent_run failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_write(workspace: str, section: str | None = None, round: int = 1) -> str:
+    """Run preflight/build/run and leave the manuscript ready for polish."""
+    try:
+        from autor.write_agent import runner
+
+        cfg = _get_cfg()
+        sections = [section] if section else None
+        return json.dumps(runner.write(workspace, cfg, sections=sections, round_no=round).to_dict(), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_write failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_polish(workspace: str, round: int = 1, in_place: bool = True) -> str:
+    """Polish anchored write.md sections and rerun internal pattern gates."""
+    try:
+        from autor.write_agent import runner
+
+        cfg = _get_cfg()
+        return json.dumps(runner.polish(workspace, cfg, round_no=round, in_place=in_place).to_dict(), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_polish failed")
         return _error("internal", str(e))
 
 

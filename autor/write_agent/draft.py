@@ -8,7 +8,8 @@ from typing import Any
 from autor.write_agent import llm
 from autor.write_agent.gates import evaluate_section_candidates
 from autor.write_agent.models import SectionKernel, WriteAgentConfig
-from autor.write_agent.prompts import CANDIDATE_WRITER, WRITER_SYSTEM
+from autor.write_agent.patterns import evaluate_pattern_contract, load_section_contracts, save_pattern_report
+from autor.write_agent.prompts import CANDIDATE_WRITER, PATTERN_CONTRACT_PROMPT, WRITER_SYSTEM
 from autor.write_agent.workspace_io import read_jsonl, read_text, variants_dir, write_text
 
 
@@ -29,6 +30,13 @@ def generate_section_candidates(
     target_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     packet = _evidence_packet(ws_dir, kernel)
+    contracts = load_section_contracts(ws_dir)
+    contract = contracts.get(kernel.section_id, {})
+    pattern_contract = PATTERN_CONTRACT_PROMPT.format(
+        required_moves=", ".join(contract.get("required_moves", [])),
+        preferred_moves=", ".join(contract.get("preferred_moves", [])),
+        forbidden_patterns=", ".join(contract.get("forbidden_patterns", [])),
+    )
     for seed in section_seeds:
         prompt = CANDIDATE_WRITER.format(
             section_id=kernel.section_id,
@@ -38,6 +46,7 @@ def generate_section_candidates(
             contrast=kernel.contrast,
             forbidden_overclaim=kernel.forbidden_overclaim,
             seed=seed,
+            pattern_contract=pattern_contract,
             evidence_packet=packet,
         )
         text = llm.complete_text(prompt, config, system=WRITER_SYSTEM, model=config.model)
@@ -45,6 +54,13 @@ def generate_section_candidates(
         write_text(path, text.strip() + "\n")
         paths.append(path)
     evaluate_section_candidates(ws_dir, kernel.section_id, paths)
+    if contract:
+        pattern_results = []
+        for path in paths:
+            result = evaluate_pattern_contract(read_text(path), contract, config)
+            result.candidate_id = path.name
+            pattern_results.append(result)
+        save_pattern_report(ws_dir, pattern_results)
     return paths
 
 
