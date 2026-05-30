@@ -8,6 +8,7 @@ from typing import Any
 
 from autor.write_agent import llm
 from autor.write_agent.config import from_autor_config
+from autor.write_agent.contracts import load_writing_contracts
 from autor.write_agent.integrate import replace_section
 from autor.write_agent.models import SectionKernel, WriteAgentState
 from autor.write_agent.patterns import (
@@ -22,6 +23,10 @@ from autor.write_agent.workspace_io import extract_citekeys, read_jsonl, read_te
 PLACEHOLDER_RE = re.compile(r"(insert citation|citation needed|fill in|real numbers|待补充|补充引用)", re.IGNORECASE)
 
 
+def _word_count(text: str) -> int:
+    return len(re.findall(r"\b\S+\b", text))
+
+
 def _load_kernels(ws_dir: Path) -> dict[str, SectionKernel]:
     rows = read_jsonl(ws_dir / "sidecars" / "section-kernels.jsonl")
     return {row["section_id"]: SectionKernel(**row) for row in rows}
@@ -29,7 +34,27 @@ def _load_kernels(ws_dir: Path) -> dict[str, SectionKernel]:
 
 def _anchored_sections(text: str) -> dict[str, str]:
     pattern = re.compile(r"<!--\s*AUTOR:SECTION\s+([A-Za-z0-9_-]+)\s+START\s*-->(.*?)<!--\s*AUTOR:SECTION\s+\1\s+END\s*-->", re.DOTALL)
-    return {match.group(1): match.group(2).strip() for match in pattern.finditer(text)}
+    sections = {match.group(1): match.group(2).strip() for match in pattern.finditer(text)}
+    if sections:
+        return sections
+    heading_pattern = re.compile(
+        r"^###\s+(S\d+[A-Za-z0-9_-]*)\s*[:.].*?(?=^###\s+S\d+[A-Za-z0-9_-]*\s*[:.]|\Z)",
+        re.DOTALL | re.MULTILINE,
+    )
+    return {match.group(1): match.group(0).strip() for match in heading_pattern.finditer(text)}
+
+
+def _heading_sections_by_kernel_order(text: str, kernels: dict[str, SectionKernel]) -> dict[str, str]:
+    matches = list(re.finditer(r"^###\s+.*$", text, flags=re.MULTILINE))
+    if not matches:
+        return {}
+    ids = list(kernels.keys())
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches[: len(ids)]):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections[ids[index]] = text[start:end].strip()
+    return sections
 
 
 def _result(
@@ -85,7 +110,10 @@ def run_polish(
         )
         update_state(ws_dir, **state.to_dict())
         return state
-    sections_by_id = _anchored_sections(read_text(write_md))
+    write_text_source = read_text(write_md)
+    sections_by_id = _anchored_sections(write_text_source)
+    if not sections_by_id:
+        sections_by_id = _heading_sections_by_kernel_order(write_text_source, kernels)
     selected = set(sections or sections_by_id.keys())
     if not sections_by_id:
         state = _result(
@@ -107,6 +135,8 @@ def run_polish(
     report_lines = ["# WriteAgent Polish Report", ""]
     pattern_results = []
     polished_sections: list[str] = []
+    staged_replacements: dict[str, tuple[str, str]] = {}
+    writing_contracts = load_writing_contracts(ws_dir)
 
     for section_id, source_text in sections_by_id.items():
         if section_id not in selected:
@@ -150,17 +180,35 @@ def run_polish(
         polished_keys = set(extract_citekeys(polished))
         added = sorted(polished_keys - source_keys)
         removed = sorted(source_keys - polished_keys)
-        if added or removed:
-            state = _result(
-                workspace,
-                "REWRITE_REQUIRED_STYLE",
-                failed_stage="polish",
-                cause_class="citation_drift",
-                next_action="rerun_write",
-                details={"section_id": section_id, "added_citekeys": added, "removed_citekeys": removed},
+        writing_contract = writing_contracts.get(section_id)
+        length_invalid = False
+        if writing_contract:
+            words = _word_count(polished)
+            length_invalid = words < writing_contract.min_words or words > writing_contract.max_words
+        if added or removed or length_invalid:
+            source_pattern_result = evaluate_pattern_contract(source_text, contract, wa_cfg)
+            source_pattern_result.candidate_id = f"{section_id}.source-retained.md"
+            pattern_results.append(source_pattern_result)
+            if source_pattern_result.hard_fail:
+                state = _result(
+                    workspace,
+                    "REWRITE_REQUIRED_STYLE",
+                    failed_stage="polish",
+                    cause_class="citation_drift",
+                    next_action="rerun_write",
+                    details={"section_id": section_id, "added_citekeys": added, "removed_citekeys": removed},
+                )
+                update_state(ws_dir, **state.to_dict())
+                return state
+            write_text(round_dir / f"{section_id}.polished.md", source_text.strip() + "\n")
+            polished_sections.append(section_id)
+            staged_replacements[section_id] = (kernel.title, source_text.strip() + "\n")
+            reason = "citation drift" if added or removed else "word-range drift"
+            report_lines.append(
+                f"- {section_id}: PASS_SOURCE_RETAINED "
+                f"(rejected polish {reason}; added={len(added)}, removed={len(removed)})"
             )
-            update_state(ws_dir, **state.to_dict())
-            return state
+            continue
         pattern_result = evaluate_pattern_contract(polished, contract, wa_cfg)
         pattern_result.candidate_id = f"{section_id}.polished.md"
         pattern_results.append(pattern_result)
@@ -189,11 +237,13 @@ def run_polish(
             update_state(ws_dir, **state.to_dict())
             return state
         write_text(round_dir / f"{section_id}.polished.md", polished)
-        if in_place:
-            replace_section(ws_dir, section_id, kernel.title, polished)
+        staged_replacements[section_id] = (kernel.title, polished)
         polished_sections.append(section_id)
         report_lines.append(f"- {section_id}: PASS")
 
+    if in_place:
+        for section_id, (title, replacement) in staged_replacements.items():
+            replace_section(ws_dir, section_id, title, replacement)
     save_pattern_report(ws_dir, pattern_results)
     write_text(qa_dir / "polish-report.md", "\n".join(report_lines) + "\n")
     state = _result(

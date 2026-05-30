@@ -35,6 +35,7 @@ cli.py — autor 命令行入口
     autor plot <prompt> [--ws <workspace-name>] [--name STEM]
     autor write-agent write <workspace>
     autor write-agent polish <workspace>
+    autor write-agent audit <workspace>
     autor ws init <name>
     autor ws add <name> <paper-refs...> [--search Q] [--all]
     autor ws remove <name> <paper-refs...>
@@ -1448,6 +1449,25 @@ def cmd_write_agent(args: argparse.Namespace, cfg) -> None:
             result = runner.status(args.workspace, cfg)
         elif action == "critic-context":
             result = runner.critic_context(args.workspace, cfg, args.round_no)
+        elif action == "clean":
+            from autor.write_agent.orchestrator import clean_workspace
+
+            result = clean_workspace(cfg._root, args.workspace)
+        elif action == "audit":
+            from autor.write_agent.orchestrator import audit_completion
+
+            result = audit_completion(cfg._root, args.workspace)
+        elif action == "orchestrate":
+            from autor.write_agent.orchestrator import orchestrate
+
+            result = orchestrate(
+                cfg._root,
+                args.workspace,
+                cfg=cfg,
+                rounds=args.rounds,
+                clean=args.clean,
+                execute=args.execute,
+            )
         else:
             result = {"error": "unknown_action", "action": action}
     except ValueError as e:
@@ -3160,6 +3180,18 @@ def main() -> None:
     p_wa_ctx = p_wa_sub.add_parser("critic-context", help="生成外部 Critic subagent 上下文包")
     p_wa_ctx.add_argument("workspace", help="工作区名称")
     p_wa_ctx.add_argument("--round", dest="round_no", type=int, default=1, help="QA round 编号")
+
+    p_wa_clean = p_wa_sub.add_parser("clean", help="清理工作区中的旧写作/QA产物，保留文献准备文件")
+    p_wa_clean.add_argument("workspace", help="工作区名称")
+
+    p_wa_audit = p_wa_sub.add_parser("audit", help="检测 write.md 完成度、引用和 section 字数合同")
+    p_wa_audit.add_argument("workspace", help="工作区名称")
+
+    p_wa_orch = p_wa_sub.add_parser("orchestrate", help="运行写作调度器：preflight/build/合同生成/完成度检测/策略比较")
+    p_wa_orch.add_argument("workspace", help="工作区名称")
+    p_wa_orch.add_argument("--rounds", type=int, default=1, help="最多调度轮数")
+    p_wa_orch.add_argument("--clean", action="store_true", help="先清理旧写作/QA产物")
+    p_wa_orch.add_argument("--execute", action="store_true", help="实际调用 write/polish；默认只生成合同、检测和策略比较")
 
     # --- import-endnote ---
     p_ie = sub.add_parser("import-endnote", help="从 Endnote XML/RIS 导入论文元数据")

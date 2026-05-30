@@ -21,6 +21,7 @@ def from_autor_config(cfg: Any) -> WriteAgentConfig:
         model=raw.get("model", "deepseek-v4-pro"),
         fast_model=raw.get("fast_model", "deepseek-v4-flash"),
         api_key_env=raw.get("api_key_env", "DEEPSEEK_API_KEY"),
+        api_key=raw.get("api_key", "") or (cfg.resolved_api_key() if hasattr(cfg, "resolved_api_key") else ""),
         seed_count=max(1, int(raw.get("seed_count", 9))),
         max_rounds=max(1, int(raw.get("max_rounds", 2))),
         audit_assumption_label=raw.get("audit_assumption_label", "Claude-family LLM-written manuscript"),
@@ -34,4 +35,4 @@ def from_autor_config(cfg: Any) -> WriteAgentConfig:
 
 
 def resolve_api_key(config: WriteAgentConfig) -> str:
-    return os.environ.get(config.api_key_env, "") or os.environ.get("AUTOR_LLM_API_KEY", "")
+    return os.environ.get(config.api_key_env, "") or os.environ.get("AUTOR_LLM_API_KEY", "") or config.api_key

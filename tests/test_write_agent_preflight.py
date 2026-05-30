@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from autor.config import _build_config
+from autor.write_agent.contracts import load_writing_contracts
 from autor.write_agent.runner import build, preflight
 
 
@@ -31,7 +32,10 @@ def _write_planning_package(ws_dir):
         "| section | claim | key |\n|---|---|---|\n| S1 | direct evidence leads | [@Smith2024] |\n",
         encoding="utf-8",
     )
-    (ws_dir / "table-figure-plan.md").write_text("S1 requires T1 and F1.\n", encoding="utf-8")
+    (ws_dir / "table-figure-plan.md").write_text(
+        "S1 requires T1 and F1.\nJones2023 is a table-only boundary row for T1, not S1 prose-support evidence.\n",
+        encoding="utf-8",
+    )
 
 
 class TestWriteAgentPreflight:
@@ -57,4 +61,10 @@ class TestWriteAgentPreflight:
         assert (ws_dir / "sidecars" / "human-move-bank.json").exists()
         assert (ws_dir / "sidecars" / "anti-ai-patterns.json").exists()
         assert (ws_dir / "sidecars" / "section-pattern-contracts.jsonl").exists()
-        assert "<!-- AUTOR:SECTION S1 START -->" in (ws_dir / "write.md").read_text(encoding="utf-8")
+        assert (ws_dir / "sidecars" / "section-writing-contract.jsonl").exists()
+        assert "### S1: Direct evidence" in (ws_dir / "write.md").read_text(encoding="utf-8")
+
+        contract = load_writing_contracts(ws_dir)["S1"]
+        assert "Smith2024" in contract.prose_allowed_citekeys
+        assert "Jones2023" in contract.table_only_citekeys
+        assert "Jones2023" not in contract.prose_allowed_citekeys

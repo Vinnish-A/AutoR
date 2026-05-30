@@ -13,6 +13,7 @@ class WriteAgentConfig:
     model: str = "deepseek-v4-pro"
     fast_model: str = "deepseek-v4-flash"
     api_key_env: str = "DEEPSEEK_API_KEY"
+    api_key: str = ""
     seed_count: int = 9
     max_rounds: int = 2
     audit_assumption_label: str = "Claude-family LLM-written manuscript"
@@ -39,6 +40,33 @@ class SectionKernel:
     background_only_keys: list[str] = field(default_factory=list)
     required_figures: list[str] = field(default_factory=list)
     failure_test: str = ""
+
+
+@dataclass
+class SectionWritingContract:
+    section_id: str
+    target_words: int
+    min_words: int
+    max_words: int
+    required_citekeys: list[str] = field(default_factory=list)
+    optional_citekeys: list[str] = field(default_factory=list)
+    prohibited_citekeys: list[str] = field(default_factory=list)
+    preferred_seed_types: list[str] = field(default_factory=list)
+    required_moves: list[str] = field(default_factory=list)
+    table_ids: list[str] = field(default_factory=list)
+    figure_ids: list[str] = field(default_factory=list)
+    prose_allowed_citekeys: list[str] = field(default_factory=list)
+    table_only_citekeys: list[str] = field(default_factory=list)
+    figure_only_citekeys: list[str] = field(default_factory=list)
+    currentness_only_records: list[str] = field(default_factory=list)
+    forbidden_claim_patterns: list[str] = field(default_factory=list)
+    expansion_objectives: list[str] = field(default_factory=list)
+    claim_license_decisions: list[str] = field(default_factory=list)
+    evidence_maturity_order: list[str] = field(default_factory=list)
+    table_contract: dict[str, Any] = field(default_factory=dict)
+    selected_seed_id: str | None = None
+    selected_candidate: str | None = None
+    selected_score: int | None = None
 
 
 @dataclass

@@ -84,6 +84,32 @@ def test_missing_required_human_move_blocks_integration():
     assert "evidence_tiering" in result.missing_required_moves
 
 
+def test_clinical_evidence_hierarchy_counts_as_tiering():
+    contract = build_pattern_contract("S1", "Clinical object")
+    result = evaluate_pattern_contract(
+        "The cohort shows that pCR is prognostic but remains an incomplete surrogate endpoint. "
+        "RCB adds a static histologic risk gradient, whereas ctDNA provides a complementary molecular "
+        "and systemic signal that cannot be treated as a treatment-directive rule.",
+        contract,
+        WriteAgentConfig(),
+    )
+
+    assert "evidence_tiering" not in result.missing_required_moves
+
+
+def test_spatial_boundary_counts_as_precise_uncertainty():
+    contract = build_pattern_contract("S2", "Baseline spatial atlases")
+    result = evaluate_pattern_contract(
+        "Direct spatial atlas evidence separates treatment-naive neighborhoods from residual disease "
+        "interpretation. The unresolved limitation is scale: ligand-receptor architecture in pre-treatment "
+        "ecosystems cannot yet prove which post-treatment niches survive therapy.",
+        contract,
+        WriteAgentConfig(),
+    )
+
+    assert "precise_uncertainty" not in result.missing_required_moves
+
+
 def test_pattern_report_is_written(tmp_path):
     ws_dir = tmp_path / "workspace" / "pattern-ws"
     ws_dir.mkdir(parents=True)

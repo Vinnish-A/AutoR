@@ -1939,6 +1939,48 @@ def write_agent_status(workspace: str) -> str:
         return _error("internal", str(e))
 
 
+@mcp.tool()
+def write_agent_clean(workspace: str) -> str:
+    """Clean old write/QA artifacts while preserving literature preparation files."""
+    try:
+        from autor.write_agent.orchestrator import clean_workspace
+
+        cfg = _get_cfg()
+        return json.dumps(clean_workspace(cfg._root, workspace), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_clean failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_audit(workspace: str) -> str:
+    """Audit manuscript completion, citation coverage, and section depth contracts."""
+    try:
+        from autor.write_agent.orchestrator import audit_completion
+
+        cfg = _get_cfg()
+        return json.dumps(audit_completion(cfg._root, workspace), ensure_ascii=False)
+    except Exception as e:
+        _log.exception("write_agent_audit failed")
+        return _error("internal", str(e))
+
+
+@mcp.tool()
+def write_agent_orchestrate(workspace: str, rounds: int = 1, clean: bool = False, execute: bool = False) -> str:
+    """Run deterministic write orchestration, completion audit, and strategy comparison."""
+    try:
+        from autor.write_agent.orchestrator import orchestrate
+
+        cfg = _get_cfg()
+        return json.dumps(
+            orchestrate(cfg._root, workspace, cfg=cfg, rounds=rounds, clean=clean, execute=execute),
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        _log.exception("write_agent_orchestrate failed")
+        return _error("internal", str(e))
+
+
 # ============================================================================
 #  Entry point
 # ============================================================================

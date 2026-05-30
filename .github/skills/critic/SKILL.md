@@ -59,6 +59,45 @@ You are not just passively reading the text; you are a fact-checking investigato
 - Treat repeated dash compression as AI-flavored cadence when it substitutes for real causal, contrastive, or evidentiary structure.
 - **Directive**: Do not ask for cosmetic replacement only. Require the writer to decide the function of each dash-heavy sentence: split independent claims with a period; use a semicolon or colon for tight logical relation; use commas or parentheses for minor apposition; rewrite the sentence when the dash is masking weak synthesis. Preserve only rare dashes that carry necessary interruption or decisive contrast.
 
+### 8. The Manuscript-Surface Audit
+The draft must read like a formal scholarly article, not an orchestration trace.
+
+Reject the draft if it contains visible workflow scaffolding, including:
+- internal section IDs in manuscript headings, such as `S1:`, `S2:`, or `S7`;
+- malformed headings such as `S1: . Title`;
+- table or figure titles that describe prompt constraints instead of scientific content;
+- terms such as `claim license`, `evidence boundary`, `currentness boundary`, `table-only`, `must-cite`, `round`, `write-agent`, `contract`, `gate`, `waive`, or `planned asset` in manuscript prose or table headings;
+- table cells that say what the writer must not claim instead of stating the scientific role of the source;
+- figure legends that explain workflow prohibitions rather than the biology, clinical evidence, or method being visualized.
+
+These are not minor copyediting issues. They are signs that planning metadata leaked into the article. Issue `[REJECT - REWRITE REQUIRED]` unless the leakage is isolated and can be removed surgically without changing the argument.
+
+### 9. The Anti-Dialogue Audit
+The manuscript must not sound as if the author is talking to a user, reviewer, planner, or assistant.
+
+Reject or require rewrite for conversational or instruction-like prose, including:
+- "this review will", "we should", "the reader should", "what this means", "the task is", "the section must", or similar meta-address;
+- phrasing that narrates the writer's action instead of making an academic claim;
+- sentences that explain how the article is organized when a direct substantive transition would work better;
+- labels such as "Core claim", "Allowed evidence", "Evidence boundary", or "Precise uncertainty" used as visible prose headings unless the target journal explicitly uses that format.
+
+Academic prose can state limits, but it should do so as a scientific claim: e.g., write "No retained study tests X against RCB in a powered residual-disease cohort", not "the evidence boundary is that X is not licensed".
+
+### 10. The Repeated Contract-Language Audit
+Evidence discipline must be expressed through concrete study design, sample state, endpoint, comparator, and uncertainty, not by repeatedly naming abstract contract categories.
+
+Flag and usually reject drafts that repeatedly rely on terms such as:
+- `evidence boundary`
+- `claim license`
+- `measurement blindspot`
+- `central tension`
+- `precise uncertainty`
+- `direct evidence`
+- `adjacent evidence`
+- `possible failure test`
+
+These phrases may appear rarely as internal drafting aids, but a published manuscript should not expose them as the main rhetorical machinery. If a phrase appears across multiple sections with little variation, treat it as a seed failure and request structural rewrite. The correction should replace labels with the concrete missing proof, e.g., sample timing, cohort size, assay resolution, endpoint, comparator, or lack of RCB-adjusted validation.
+
 ## Output Format: The Mandatory Revision Ticket
 
 Do not output a conversational critique. Do not rewrite the text yourself in full. Output a **Revision Ticket** that the `write` or `paper-writing` skill must execute.
@@ -81,6 +120,11 @@ List exact phrases or sentences that are hollow, evasive, or flowery, and comman
 Include dash-cadence mandates here when relevant:
 - *Flag:* "Paragraph 4 uses two em dashes and the next paragraph opens with another dash construction."
 - *Replace with:* "Split the first dash sentence into two claims and convert the second into a colon-led explanation; keep no more than one dash in the section unless the retained dash carries necessary interruption."
+
+Include manuscript-surface and anti-dialogue mandates here when relevant:
+- *Delete:* "Evidence boundary", "claim license", "currentness boundary", or similar workflow labels from visible prose and table titles.
+- *Replace with:* A concrete scientific limitation, such as "No retained cohort tests this marker against RCB-adjusted recurrence risk."
+- *Reject:* Headings that retain internal IDs (`S1:`) or malformed planning syntax (`S1: .`).
 
 ### 4. Structural Synthesis Mandates
 Identify where the writer just "listed" studies and tell them how to compress them.

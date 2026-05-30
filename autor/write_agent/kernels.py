@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 from pathlib import Path
 
 import yaml
@@ -46,6 +47,39 @@ def _planned_assets(table_plan: str, section_id: str) -> tuple[list[str], list[s
     return list(dict.fromkeys(tables)), list(dict.fromkeys(figures))
 
 
+def _reference_roles(ws_dir: Path) -> dict[str, dict]:
+    path = ws_dir / "reference-map.json"
+    if not path.exists():
+        return {}
+    data = json.loads(read_text(path))
+    records = data.get("references", []) if isinstance(data, dict) else data
+    return {str(record.get("citekey", "")): record for record in records if record.get("citekey")}
+
+
+def _split_evidence_keys(section_keys: list[str], records: dict[str, dict]) -> tuple[list[str], list[str], list[str]]:
+    direct: list[str] = []
+    adjacent: list[str] = []
+    background: list[str] = []
+    for key in section_keys:
+        record = records.get(key, {})
+        paper_type = str(record.get("paper_type") or "").lower()
+        review_use = str(record.get("review_use") or "").lower()
+        citation_policy = str(record.get("citation_policy") or "").lower()
+        role = " ".join(record.get("evidence_role") or []) if isinstance(record.get("evidence_role"), list) else str(record.get("evidence_role") or "")
+        if review_use == "background_only" or citation_policy == "background_only" or paper_type in {"review", "systematic_review", "meta_analysis"}:
+            background.append(key)
+        elif "adjacent" in role or "method" in role or review_use in {"method_source", "taxonomy_boundary"}:
+            adjacent.append(key)
+        elif record.get("corpus_layer") == "core" or citation_policy == "must_cite" or "core_evidence" in role:
+            direct.append(key)
+        else:
+            adjacent.append(key)
+    if not direct and section_keys:
+        direct = section_keys[: max(1, min(4, len(section_keys)))]
+        adjacent = [key for key in section_keys if key not in direct and key not in background]
+    return direct, adjacent, background
+
+
 def build_kernels(ws_dir: Path) -> list[SectionKernel]:
     review_plan = read_text(ws_dir / "review-plan.md")
     evidence = read_text(ws_dir / "evidence-ledger.md")
@@ -55,11 +89,11 @@ def build_kernels(ws_dir: Path) -> list[SectionKernel]:
         blocks = [(sid, sid, "") for sid in infer_main_sections(review_plan)]
     kernels: list[SectionKernel] = []
     all_evidence_keys = extract_citekeys(evidence)
+    records = _reference_roles(ws_dir)
     for section_id, title, body in blocks:
         section_keys = extract_citekeys(body) or all_evidence_keys[:8]
         tables, figures = _planned_assets(table_plan, section_id)
-        direct = section_keys[: max(1, min(4, len(section_keys)))]
-        adjacent = section_keys[len(direct):]
+        direct, adjacent, background = _split_evidence_keys(section_keys, records)
         kernel = SectionKernel(
             section_id=section_id,
             title=title,
@@ -67,12 +101,12 @@ def build_kernels(ws_dir: Path) -> list[SectionKernel]:
             evidence_keys=section_keys,
             direct_evidence_keys=direct,
             adjacent_evidence_keys=adjacent,
-            background_only_keys=[],
+            background_only_keys=background,
             contrast="Use the section evidence to distinguish the strongest supported interpretation from adjacent claims.",
             forbidden_overclaim="Do not convert adjacent or background evidence into direct support for the section claim.",
             required_tables=tables,
             required_figures=figures,
-            failure_test="direct evidence leads",
+            failure_test="",
         )
         kernels.append(kernel)
     write_jsonl(sidecars_dir(ws_dir) / "section-kernels.jsonl", kernels)

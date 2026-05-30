@@ -196,9 +196,43 @@ def _move_present(move_id: str, text: str) -> bool:
     if move_id == "verbs_carry_judgment":
         return bool(re.search(r"\b(separates|restricts|exposes|qualifies|licenses|fails|invalidates|converts|downgrades|constrains|reveals|shows|demonstrates)\b", lowered))
     if move_id == "evidence_tiering":
-        return bool(re.search(r"\b(direct|adjacent|background|method-only|speculative|unlicensed|downgrade|tier)\b", lowered))
+        explicit = re.search(r"\b(direct|adjacent|background|method-only|speculative|unlicensed|downgrade|tier)\b", lowered)
+        if explicit:
+            return True
+        hierarchy_terms = {
+            "prognostic",
+            "predictive",
+            "surrogate",
+            "endpoint",
+            "validation",
+            "cohort",
+            "trial",
+            "registry",
+            "method",
+            "histologic",
+            "molecular",
+            "pathology",
+            "pathologic",
+            "systemic",
+            "local",
+            "static",
+            "dynamic",
+            "independent",
+            "additive",
+            "complementary",
+            "cannot",
+        }
+        return sum(1 for term in hierarchy_terms if term in lowered) >= 4
     if move_id == "precise_uncertainty":
-        return bool(re.search(r"\b(assay|endpoint|mechanism|subtype|sampling|trial|roi|segmentation|predictive|pharmacodynamic|reproducibility|proof|uncertain|unresolved)\b", lowered))
+        return bool(
+            re.search(
+                r"\b(assay|endpoint|mechanism|subtype|sampling|trial|roi|segmentation|predictive|"
+                r"pharmacodynamic|reproducibility|proof|uncertain|unresolved|cannot|limit|limitation|"
+                r"scale|resolution|architecture|spatial|neighborhood|ecosystem|ligand|receptor|"
+                r"treatment-naive|pre-treatment|post-treatment|residual)\b",
+                lowered,
+            )
+        )
     if move_id == "table_as_adjudication":
         return any(not table_is_warehouse(table) for table in extract_markdown_tables(text))
     if move_id == "failure_test_ending":

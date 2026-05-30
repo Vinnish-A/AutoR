@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from autor.write_agent.config import from_autor_config
+from autor.write_agent.assets import integrate_assets
+from autor.write_agent.contracts import build_writing_contracts, load_writing_contracts, update_selected_candidate
 from autor.write_agent.draft import generate_section_candidates, load_seed_bank
 from autor.write_agent.gates import evaluate_candidate
 from autor.write_agent.integrate import create_skeleton, replace_section
@@ -52,6 +54,7 @@ def build(workspace: str, cfg: Any | None = None) -> WriteAgentState:
     wa_cfg = from_autor_config(cfg)
     kernels = build_kernels(ws_dir)
     build_pattern_sidecars(ws_dir, kernels)
+    build_writing_contracts(ws_dir, kernels)
     build_seed_bank(ws_dir, kernels, wa_cfg.seed_count)
     if not (ws_dir / "write.md").exists():
         create_skeleton(ws_dir, kernels)
@@ -104,23 +107,36 @@ def run(
             )
             update_state(ws_dir, **state.to_dict())
             return state
-        contracts = load_section_contracts(ws_dir)
+        pattern_contracts = load_section_contracts(ws_dir)
+        writing_contracts = load_writing_contracts(ws_dir)
         passing: list[tuple[int, Path]] = []
         pattern_failed = False
         for path in candidate_paths:
-            decision = evaluate_candidate(read_text(path), ws_dir, kernel)
+            candidate_text = read_text(path)
+            decision = evaluate_candidate(candidate_text, ws_dir, kernel)
             if decision.hard_fail:
                 continue
-            contract = contracts.get(kernel.section_id)
-            if contract:
-                pattern_result = evaluate_pattern_contract(read_text(path), contract, wa_cfg)
+            pattern_contract = pattern_contracts.get(kernel.section_id)
+            writing_contract = writing_contracts.get(kernel.section_id)
+            if pattern_contract:
+                pattern_result = evaluate_pattern_contract(candidate_text, pattern_contract, wa_cfg)
                 if pattern_result.hard_fail:
                     pattern_failed = True
                     continue
                 pattern_bonus = sum(pattern_result.scores.values()) - pattern_result.scores.get("anti_ai_penalty", 0)
             else:
                 pattern_bonus = 0
-            passing.append((decision.score.claim_courage + decision.score.human_move_score + pattern_bonus, path))
+            if writing_contract:
+                words = len(candidate_text.split())
+                if words < writing_contract.min_words:
+                    continue
+                elif words > writing_contract.max_words:
+                    continue
+                else:
+                    length_bonus = 10
+            else:
+                length_bonus = 0
+            passing.append((decision.score.claim_courage + decision.score.human_move_score + pattern_bonus + length_bonus, path))
         if not passing:
             state = WriteAgentState(
                 workspace=workspace,
@@ -133,12 +149,18 @@ def run(
             update_state(ws_dir, **state.to_dict())
             return state
         passing.sort(reverse=True, key=lambda item: item[0])
-        replace_section(ws_dir, kernel.section_id, kernel.title, read_text(passing[0][1]))
+        selected_score, selected_path = passing[0]
+        replace_section(ws_dir, kernel.section_id, kernel.title, read_text(selected_path))
+        update_selected_candidate(ws_dir, kernel.section_id, selected_path, selected_score)
         updated.append(kernel.section_id)
+    asset_state = {}
+    write_path = ws_dir / "write.md"
+    if write_path.exists() and "_Draft pending._" not in read_text(write_path):
+        asset_state = integrate_assets(ws_dir)
     state = WriteAgentState(
         workspace=workspace,
         status="WRITE_READY_FOR_EXTERNAL_CRITIC",
-        details={"updated_sections": updated, "round": round_no},
+        details={"updated_sections": updated, "round": round_no, "asset_integration": asset_state},
     )
     update_state(ws_dir, **state.to_dict())
     return state

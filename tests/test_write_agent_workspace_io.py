@@ -18,8 +18,9 @@ class TestWriteAgentWorkspaceIO:
         replace_section(ws_dir, "S2", "Second", "Jones shows the replacement [@Jones2023].")
         text = (ws_dir / "write.md").read_text(encoding="utf-8")
 
-        assert "## First\n\n_Draft pending._" in text
+        assert "### S1: First\n\n_Draft pending._" in text
         assert "Jones shows the replacement" in text
+        assert "AUTOR:SECTION" not in text
 
     def test_critic_ticket_revises_affected_section_only(self, tmp_path):
         ws_dir = tmp_path / "workspace" / "revise-ws"

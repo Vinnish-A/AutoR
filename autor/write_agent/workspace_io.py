@@ -143,6 +143,11 @@ The manuscript has passed internal write-agent pattern gates, but the external c
 - interchangeable section openings
 - generic validation endings
 - table-as-warehouse behavior
+- manuscript-surface leakage, including internal section IDs such as S1/S2 in final headings
+- malformed headings such as `S1: . Title`
+- conversational or user-facing prose, such as `this review will`, `we should`, `the reader should`, or process narration
+- workflow/planning language in manuscript prose, table titles, or figure legends, including `claim license`, `evidence boundary`, `currentness boundary`, `table-only`, `must-cite`, `round`, `write-agent`, `contract`, `gate`, `waive`, or `planned asset`
+- repeated contract-language labels such as `measurement blindspot`, `central tension`, `precise uncertainty`, `direct evidence`, `adjacent evidence`, or `possible failure test` when they replace concrete study-design limitations
 - failure to distinguish direct, adjacent, method-only, and background evidence
 - failure to name a concrete missing proof
 

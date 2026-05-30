@@ -66,10 +66,13 @@ Use an existing CSL under the workspace when available. For Nature Reviews / Spr
 When writing is requested:
 
 ```bash
+autor write-agent orchestrate <name>
 autor write-agent write <name>
 autor write-agent polish <name>
 autor write-agent critic-context <name> --round <N>
 ```
+
+Use `autor write-agent orchestrate <name> --clean` when restarting a workspace from its literature/planning package. This removes old write/QA/figure/candidate artifacts while preserving the canonical literature preparation files, then rebuilds section kernels, section writing contracts, completion audit output, and strategy comparison reports under `qa/orchestrator/`.
 
 Then launch an external GPT-5.5 thinking high Critic subagent using `workspace/<name>/sidecars/critic-context.md`. If rejected, run:
 
@@ -80,6 +83,22 @@ autor write-agent revise <name> --ticket workspace/<name>/qa/round-<N>/critic-ti
 ### 2. Draft as one integrated manuscript
 
 `autor write-agent` generates section kernels, seed candidates, internal pattern gates, polish reports, and anchor replacements inside `workspace/<name>/write.md`. The writing agent may inspect these sidecars, but must not concatenate candidate files or promote a candidate from `variants/` directly. Do not manually polish AutoR manuscripts; use `autor write-agent polish <name>`.
+
+The write-agent also writes `workspace/<name>/sidecars/section-writing-contract.jsonl`. This is the section-level contract for target word range, required/optional citekeys, preferred seed types, required moves, planned tables/figures, and the selected seed/candidate after a gated write pass.
+
+Run completion and depth audits before broad rewrites:
+
+```bash
+autor write-agent audit <name>
+```
+
+If citations, must-cites, and evidence-boundary gates pass but the draft is under the global or section-level word floor, treat this as a `depth_gap`, not as a plan failure or full-manuscript rewrite. Rerun only the under-length sections reported by the audit, preserving sections that already pass:
+
+```bash
+autor write-agent run <name> --section <SECTION_ID> --round <N>
+```
+
+The section-writing contract may include prose-allowed, table-only, figure-only, and currentness-only citekey scopes plus expansion objectives. Table-only and currentness-only records must not be used as prose support.
 
 Dash discipline:
 
