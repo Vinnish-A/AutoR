@@ -792,8 +792,7 @@ def citation_coverage(
 
     Args:
         ws_dir: Workspace directory.
-        manuscript_path: Manuscript Markdown path. Defaults to ``final.md``
-            when present, then ``write.md``.
+        manuscript_path: Manuscript Markdown path. Defaults to ``final.md``.
         require: Which reference-map rows must appear in the manuscript:
             ``retained``, ``citable``, or ``must_cite``.
 
@@ -804,8 +803,6 @@ def citation_coverage(
         raise ValueError("require must be one of: retained, citable, must_cite")
     if manuscript_path is None:
         manuscript_path = ws_dir / "final.md"
-        if not manuscript_path.exists():
-            manuscript_path = ws_dir / "write.md"
     if not manuscript_path.exists():
         raise FileNotFoundError(f"缺少稿件文件: {manuscript_path}")
 

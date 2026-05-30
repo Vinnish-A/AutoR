@@ -59,7 +59,6 @@ Summarize them by group. Start with the overview, then go deeper only if the use
 
 #### Academic writing
 - `plan`: prepare a review in a Springer Nature Reviews style through outline revision, paper classification, and fixed task / table design
-- `write`: pick up directly from `/plan` and draft the formal review text using workspace-grounded evidence, Markdown + CSL citations, and more natural prose
 - `literature-review`: write a literature review
 - `paper-writing`: draft individual paper sections
 - `update`: revise a manuscript under reviewer or editor comments with minimum-necessary, traceable edits and evidence-gated outside supplementation
@@ -113,7 +112,7 @@ When the user asks a broad question, organize the answer in this order by defaul
 - The user wants to expand an existing workspace through external acquisition: switch to `autodownload`
 - The user wants to build a new workspace from a topic / outline and needs external literature acquisition: switch to `autodownload`
 - The user wants to revise structure, classify papers, and design tables before writing a review: switch to `plan`
-- The user wants to formally draft the review text following `/plan`: switch to `write`
+- The user wants to formally draft review text after `/plan`: use `paper-writing` section by section, or follow the user's explicitly chosen drafting workflow
 - The user wants a more open-ended review or direct section drafting: switch to `literature-review` or `paper-writing`
 - The user wants reviewer-driven manuscript revision with minimum necessary changes: switch to `update`
 - The user wants to verify citations: switch to `citation-check`

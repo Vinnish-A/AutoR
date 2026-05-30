@@ -1,6 +1,6 @@
 ---
 name: literature-review
-description: Write an exploratory literature review based on papers in an autor workspace. For approved review-article workflows, defer to plan and write, which use the canonical references.bib / reference-map.json / evidence-ledger contract.
+description: Write an exploratory literature review based on papers in an autor workspace. For approved review-article workflows, respect the canonical references.bib / reference-map.json / evidence-ledger contract produced by plan.
 ---
 
 # Literature Review Writing
@@ -10,7 +10,7 @@ Use this skill for open-ended exploratory review writing, research summaries, th
 For formal review-article production, prefer:
 
 1. `plan` to build the canonical planning package
-2. `write` to draft from that approved package
+2. a user-selected drafting workflow, or `paper-writing` when drafting individual sections from that package
 
 ## Canonical Plan Awareness
 
@@ -24,7 +24,7 @@ evidence-ledger.md
 table-figure-plan.md
 ```
 
-then these files are hard constraints, not optional background. Do not rebuild the outline or evidence set during exploratory writing. If the user wants formal prose from that package, switch to `write`.
+then these files are hard constraints, not optional background. Do not rebuild the outline or evidence set during exploratory writing. If the user wants formal prose from that package, use the user's explicitly chosen drafting workflow or `paper-writing` for specified sections.
 
 Older files such as `paper-classification.md`, `section-evidence.md`, `table-plan.md`, and `execution-tasks.md` are compatibility exports only. Trust the canonical files when conflicts exist.
 
@@ -99,7 +99,7 @@ Writing principles:
 - use citation keys from `references.bib` when the canonical package exists
 - for informal early drafts without a canonical package, still avoid hallucinated citations and export references when possible
 
-If drafting from an approved plan, the output should be handled by `write`, not this skill.
+If drafting from an approved plan, do not rebuild the plan or evidence set. Draft only under the user's explicitly chosen workflow, or use `paper-writing` for a specified section.
 
 ### 5. Save and check
 

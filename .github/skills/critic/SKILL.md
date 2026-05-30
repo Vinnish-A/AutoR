@@ -66,7 +66,7 @@ Reject the draft if it contains visible workflow scaffolding, including:
 - internal section IDs in manuscript headings, such as `S1:`, `S2:`, or `S7`;
 - malformed headings such as `S1: . Title`;
 - table or figure titles that describe prompt constraints instead of scientific content;
-- terms such as `claim license`, `evidence boundary`, `currentness boundary`, `table-only`, `must-cite`, `round`, `write-agent`, `contract`, `gate`, `waive`, or `planned asset` in manuscript prose or table headings;
+- internal workflow terms such as `claim license`, `evidence boundary`, `currentness boundary`, `table-only`, `must-cite`, `round`, `contract`, `gate`, `waive`, tool names, or `planned asset` in manuscript prose or table headings;
 - table cells that say what the writer must not claim instead of stating the scientific role of the source;
 - figure legends that explain workflow prohibitions rather than the biology, clinical evidence, or method being visualized.
 
@@ -100,7 +100,7 @@ These phrases may appear rarely as internal drafting aids, but a published manus
 
 ## Output Format: The Mandatory Revision Ticket
 
-Do not output a conversational critique. Do not rewrite the text yourself in full. Output a **Revision Ticket** that the `write` or `paper-writing` skill must execute.
+Do not output a conversational critique. Do not rewrite the text yourself in full. Output a **Revision Ticket** for a dedicated revision pass, typically executed through `paper-writing`, `update`, or `polish`.
 
 ### 1. Verdict
 - `[REJECT - REWRITE REQUIRED]`: For severe structural issues, hollow text, or hallucinated claims.

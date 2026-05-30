@@ -33,9 +33,6 @@ cli.py — autor 命令行入口
     autor attach-pdf <paper-id> <path/to/paper.pdf>
     autor citation-check [<file>] [--ws <workspace-name>]
     autor plot <prompt> [--ws <workspace-name>] [--name STEM]
-    autor write-agent write <workspace>
-    autor write-agent polish <workspace>
-    autor write-agent audit <workspace>
     autor ws init <name>
     autor ws add <name> <paper-refs...> [--search Q] [--all]
     autor ws remove <name> <paper-refs...>
@@ -1417,62 +1414,6 @@ def cmd_identify(args: argparse.Namespace, cfg) -> None:
         "missing": missing,
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
-
-
-def cmd_write_agent(args: argparse.Namespace, cfg) -> None:
-    from autor.write_agent import runner
-
-    action = args.write_agent_action
-    try:
-        if action == "preflight":
-            result = runner.preflight(args.workspace, cfg).to_dict()
-        elif action == "build":
-            result = runner.build(args.workspace, cfg).to_dict()
-        elif action == "write":
-            sections = [args.section] if getattr(args, "section", None) else None
-            result = runner.write(args.workspace, cfg, sections=sections, round_no=args.round_no).to_dict()
-        elif action == "run":
-            sections = [args.section] if args.section else None
-            result = runner.run(args.workspace, cfg, sections=sections, round_no=args.round_no).to_dict()
-        elif action == "polish":
-            sections = [args.section] if getattr(args, "section", None) else None
-            result = runner.polish(
-                args.workspace,
-                cfg,
-                sections=sections,
-                round_no=args.round_no,
-                in_place=not args.no_in_place,
-            ).to_dict()
-        elif action == "revise":
-            result = runner.revise(args.workspace, cfg, args.ticket_paths).to_dict()
-        elif action == "status":
-            result = runner.status(args.workspace, cfg)
-        elif action == "critic-context":
-            result = runner.critic_context(args.workspace, cfg, args.round_no)
-        elif action == "clean":
-            from autor.write_agent.orchestrator import clean_workspace
-
-            result = clean_workspace(cfg._root, args.workspace)
-        elif action == "audit":
-            from autor.write_agent.orchestrator import audit_completion
-
-            result = audit_completion(cfg._root, args.workspace)
-        elif action == "orchestrate":
-            from autor.write_agent.orchestrator import orchestrate
-
-            result = orchestrate(
-                cfg._root,
-                args.workspace,
-                cfg=cfg,
-                rounds=args.rounds,
-                clean=args.clean,
-                execute=args.execute,
-            )
-        else:
-            result = {"error": "unknown_action", "action": action}
-    except ValueError as e:
-        result = {"status": "BLOCKED_BY_MISSING_INPUT", "failed_stage": action, "cause_class": "invalid_workspace", "error": str(e)}
-    ui(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def cmd_ws(args: argparse.Namespace, cfg) -> None:
@@ -3122,7 +3063,7 @@ def main() -> None:
 
     p_ws_cov = p_ws_sub.add_parser("citation-coverage", help="检查稿件引用覆盖 reference-map 的程度")
     p_ws_cov.add_argument("name", help="工作区名称")
-    p_ws_cov.add_argument("--manuscript", type=str, default=None, help="稿件 Markdown 路径（默认 final.md/write.md）")
+    p_ws_cov.add_argument("--manuscript", type=str, default=None, help="稿件 Markdown 路径（默认 final.md）")
     p_ws_cov.add_argument(
         "--require",
         choices=["retained", "citable", "must_cite"],
@@ -3142,56 +3083,6 @@ def main() -> None:
     p_ws_fig.add_argument("name", help="工作区名称")
     p_ws_fig.add_argument("--fail-if-missing", action="store_true", help="存在未导出的计划图片时返回非零状态")
     p_ws_fig.add_argument("-o", "--output", type=str, default=None, help="输出检查报告路径")
-
-    # --- write-agent ---
-    p_wa = sub.add_parser("write-agent", help="从批准的规划包生成 gated write.md")
-    p_wa.set_defaults(func=cmd_write_agent)
-    p_wa_sub = p_wa.add_subparsers(dest="write_agent_action", required=True)
-
-    p_wa_preflight = p_wa_sub.add_parser("preflight", help="检查 write-agent canonical 输入")
-    p_wa_preflight.add_argument("workspace", help="工作区名称")
-
-    p_wa_build = p_wa_sub.add_parser("build", help="生成 section kernels 和 seed bank")
-    p_wa_build.add_argument("workspace", help="工作区名称")
-
-    p_wa_write = p_wa_sub.add_parser("write", help="执行 preflight、build、run，生成待 polish 草稿")
-    p_wa_write.add_argument("workspace", help="工作区名称")
-    p_wa_write.add_argument("--section", type=str, default=None, help="只写指定 section ID，例如 S3")
-    p_wa_write.add_argument("--round", dest="round_no", type=int, default=1, help="QA round 编号")
-
-    p_wa_run = p_wa_sub.add_parser("run", help="生成候选、运行内部 gates 并更新 write.md anchors")
-    p_wa_run.add_argument("workspace", help="工作区名称")
-    p_wa_run.add_argument("--section", type=str, default=None, help="只重写指定 section ID，例如 S3")
-    p_wa_run.add_argument("--round", dest="round_no", type=int, default=1, help="QA round 编号")
-
-    p_wa_polish = p_wa_sub.add_parser("polish", help="润色 anchored write.md 并复用 pattern gates")
-    p_wa_polish.add_argument("workspace", help="工作区名称")
-    p_wa_polish.add_argument("--section", type=str, default=None, help="只 polish 指定 section ID，例如 S3")
-    p_wa_polish.add_argument("--round", dest="round_no", type=int, default=1, help="QA round 编号")
-    p_wa_polish.add_argument("--no-in-place", action="store_true", help="只写 qa/round-N/*.polished.md，不更新 write.md")
-
-    p_wa_revise = p_wa_sub.add_parser("revise", help="根据 critic/check ticket 修订受影响 anchors")
-    p_wa_revise.add_argument("workspace", help="工作区名称")
-    p_wa_revise.add_argument("--ticket", dest="ticket_paths", action="append", required=True, help="ticket 文件路径，可重复传入")
-
-    p_wa_status = p_wa_sub.add_parser("status", help="查看 write-agent 状态")
-    p_wa_status.add_argument("workspace", help="工作区名称")
-
-    p_wa_ctx = p_wa_sub.add_parser("critic-context", help="生成外部 Critic subagent 上下文包")
-    p_wa_ctx.add_argument("workspace", help="工作区名称")
-    p_wa_ctx.add_argument("--round", dest="round_no", type=int, default=1, help="QA round 编号")
-
-    p_wa_clean = p_wa_sub.add_parser("clean", help="清理工作区中的旧写作/QA产物，保留文献准备文件")
-    p_wa_clean.add_argument("workspace", help="工作区名称")
-
-    p_wa_audit = p_wa_sub.add_parser("audit", help="检测 write.md 完成度、引用和 section 字数合同")
-    p_wa_audit.add_argument("workspace", help="工作区名称")
-
-    p_wa_orch = p_wa_sub.add_parser("orchestrate", help="运行写作调度器：preflight/build/合同生成/完成度检测/策略比较")
-    p_wa_orch.add_argument("workspace", help="工作区名称")
-    p_wa_orch.add_argument("--rounds", type=int, default=1, help="最多调度轮数")
-    p_wa_orch.add_argument("--clean", action="store_true", help="先清理旧写作/QA产物")
-    p_wa_orch.add_argument("--execute", action="store_true", help="实际调用 write/polish；默认只生成合同、检测和策略比较")
 
     # --- import-endnote ---
     p_ie = sub.add_parser("import-endnote", help="从 Endnote XML/RIS 导入论文元数据")

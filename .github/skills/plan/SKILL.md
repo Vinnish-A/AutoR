@@ -255,7 +255,7 @@ Before approving the plan, verify:
 - every planned figure is marked for PlotEnhance before generation
 - excluded and unresolved records have explicit reasons
 - `CITATION_NETWORK_STATUS` is `COMPLETED` unless a justified `NOT_APPLICABLE` is recorded
-- the write phase knows what it may and may not cite
+- downstream drafting has an explicit citation policy and knows what it may and may not cite
 - compatibility files, if present, are derived rather than independent fact sources
 
 ## Final Output
@@ -289,7 +289,7 @@ HANDOFF_FILES:
 - workspace/<name>/acquisition-log.md if applicable
 OPEN_GAPS:
 - <NONE or explicit list>
-NEXT_ACTION: run_write | run_targeted_acquisition | return_to_user
+NEXT_ACTION: ready_for_manuscript_drafting | run_targeted_acquisition | return_to_user
 ```
 
 If `FRAME_STATUS` is not `APPROVED`, do not permit downstream writing.

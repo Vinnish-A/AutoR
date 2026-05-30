@@ -36,7 +36,7 @@ Compatibility exports (`paper-classification.md`, `section-evidence.md`, `table-
 5. Ingest full PDFs before using new papers for major planning claims.
 6. Maintain citation-key identity through `references.bib` and `reference-map.json`.
 7. Keep trial records as a parallel evidence layer.
-8. Stop at an approved plan; writing belongs to the `write` skill.
+8. Stop at an approved plan; manuscript drafting is outside this orchestrator and must be chosen explicitly by the user.
 
 For full-review coverage-first work, read `references/full-review-coverage-mode.md`.
 
@@ -146,5 +146,5 @@ HANDOFF_FILES:
 - workspace/<name>/acquisition-log.md if applicable
 OPEN_GAPS:
 - <NONE or explicit list>
-NEXT_ACTION: run_write | run_targeted_acquisition | return_to_user
+NEXT_ACTION: ready_for_manuscript_drafting | run_targeted_acquisition | return_to_user
 ```

@@ -266,7 +266,6 @@ class Config:
     log: LogConfig = field(default_factory=LogConfig)
     plot: PlotConfig = field(default_factory=PlotConfig)
     zotero: ZoteroConfig = field(default_factory=ZoteroConfig)
-    write_agent: dict = field(default_factory=dict)
 
     # Root directory of the config file (used to resolve relative paths)
     _root: Path = field(default_factory=Path.cwd, repr=False, compare=False)
@@ -615,6 +614,5 @@ def _build_config(data: dict, root: Path) -> Config:
         log=log,
         plot=plot,
         zotero=zotero,
-        write_agent=data.get("write_agent", {}) or {},
         _root=root,
     )

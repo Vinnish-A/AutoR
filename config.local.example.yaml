@@ -9,11 +9,6 @@
 llm:
   api_key: ""
 
-# WriteAgent uses its own provider/model settings from config.yaml.
-# By default it reads DEEPSEEK_API_KEY; override api_key_env in config.yaml if needed.
-write_agent:
-  api_key_env: DEEPSEEK_API_KEY
-
 # MinerU API keys — for PDF → Markdown cloud conversion
 # MinerU API 密钥——用于云端 PDF 转 Markdown
 # Free tier 免费申请: https://mineru.net/apiManage/token

@@ -10,7 +10,7 @@ For a full review, do the work in this order:
 2. Map the universe onto the user framework and review scope.
 3. Derive the working corpus.
 4. Derive the core analytical corpus.
-5. Only then approve writing.
+5. Only then mark the workspace ready for manuscript drafting.
 
 Do not jump directly from a topic to a narrow retained set of famous papers.
 
@@ -120,7 +120,7 @@ If citation-network mapping is used, store raw JSON under `sidecars/` and summar
 
 ## Full-Review Approval Gate
 
-Before approving writing, verify:
+Before approving manuscript drafting, verify:
 
 - field-size and branch estimates were externally calibrated
 - the universe corpus was built before aggressive pruning
@@ -153,5 +153,5 @@ HANDOFF_FILES:
 - workspace/<WS>/acquisition-log.md if applicable
 OPEN_GAPS:
 - <NONE or explicit list>
-NEXT_ACTION: run_write | run_targeted_acquisition | return_to_user
+NEXT_ACTION: ready_for_manuscript_drafting | run_targeted_acquisition | return_to_user
 ```
